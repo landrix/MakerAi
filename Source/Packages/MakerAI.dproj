@@ -186,6 +186,7 @@
         <DCCReference Include="..\Agents\uMakerAi.Agents.IAiTool.pas"/>
         <DCCReference Include="..\Agents\uMakerAi.Agents.Tools.MCP.pas"/>
         <DCCReference Include="..\Agents\uMakerAi.Agents.ToolRegistry.pas"/>
+        <DCCReference Include="..\Agents\uMakerAi.Agents.Node.LLM.pas"/>
         <DCCReference Include="..\Design\UMakerAi.ParamsRegistry.pas"/>
         <DCCReference Include="..\Chat\uMakerAi.Chat.Kimi.pas"/>
         <DCCReference Include="..\Chat\uMakerAi.Chat.LMStudio.pas"/>

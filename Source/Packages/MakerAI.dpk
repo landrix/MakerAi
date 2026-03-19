@@ -76,6 +76,7 @@ contains
   uMakerAi.Agents.IAiTool in '..\Agents\uMakerAi.Agents.IAiTool.pas',
   uMakerAi.Agents.Tools.MCP in '..\Agents\uMakerAi.Agents.Tools.MCP.pas',
   uMakerAi.Agents.ToolRegistry in '..\Agents\uMakerAi.Agents.ToolRegistry.pas',
+  uMakerAi.Agents.Node.LLM in '..\Agents\uMakerAi.Agents.Node.LLM.pas',
   UMakerAi.ParamsRegistry in '..\Design\UMakerAi.ParamsRegistry.pas',
   uMakerAi.Chat.Kimi in '..\Chat\uMakerAi.Chat.Kimi.pas',
   uMakerAi.Chat.LMStudio in '..\Chat\uMakerAi.Chat.LMStudio.pas',
