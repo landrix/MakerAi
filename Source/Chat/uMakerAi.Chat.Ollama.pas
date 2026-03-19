@@ -300,15 +300,19 @@ begin
     if Res.StatusCode = 200 then
     Begin
       jRes := TJSonObject(TJSonObject.ParseJSONValue(Res.ContentAsString));
-      If jRes.TryGetValue<TJSonArray>('models', JArr) then
-      Begin
-        For JVal in JArr do
+      try
+        If jRes.TryGetValue<TJSonArray>('models', JArr) then
         Begin
-          sModel := JVal.GetValue<String>('name');
-          If sModel <> '' then
-            Result.Add(sModel);
+          For JVal in JArr do
+          Begin
+            sModel := JVal.GetValue<String>('name');
+            If sModel <> '' then
+              Result.Add(sModel);
+          End;
         End;
-      End;
+      finally
+        jRes.Free;
+      end;
 
       // Agregar modelos personalizados
       CustomModels := TAiChatFactory.Instance.GetCustomModels(Self.GetDriverName);
@@ -517,9 +521,8 @@ begin
           FBusy := False;
           ParseChat(JObj, ResMsg);
           Result := FLastContent;
-
         Finally
-          // FreeAndNil(JObj);  //se comenta porque marca error porque ya ha sido eliminado previamente en alguna parte
+          JObj.Free;
         End;
       End
       else
@@ -1197,16 +1200,20 @@ begin
   St := TStringStream.Create('', TEncoding.UTF8);
   Response := TStringStream.Create('', TEncoding.UTF8);
   sUrl := Url + 'api/embeddings';
-  JObj := TJSonObject.Create;
 
   Try
-    JObj.AddPair('prompt', aInput);
-    JObj.AddPair('model', aModel);
-    JObj.AddPair('user', aUser);
-    JObj.AddPair('dimensions', aDimensions);
-    JObj.AddPair('encoding_format', aEncodingFormat);
+    JObj := TJSonObject.Create;
+    try
+      JObj.AddPair('prompt', aInput);
+      JObj.AddPair('model', aModel);
+      JObj.AddPair('user', aUser);
+      JObj.AddPair('dimensions', aDimensions);
+      JObj.AddPair('encoding_format', aEncodingFormat);
+      St.WriteString(JObj.ToJSON);
+    finally
+      JObj.Free;
+    end;
 
-    St.WriteString(JObj.ToJSON);
     St.Position := 0;
 
     Headers := [TNetHeader.Create('Authorization', 'Bearer ' + ApiKey)];
@@ -1217,7 +1224,11 @@ begin
     if Res.StatusCode = 200 then
     Begin
       JObj := TJSonObject(TJSonObject.ParseJSONValue(Res.ContentAsString));
-      ParseEmbedding(JObj);
+      try
+        ParseEmbedding(JObj);
+      finally
+        JObj.Free;
+      end;
       Result := Self.Data;
     End
     else
@@ -1229,7 +1240,6 @@ begin
     Client.Free;
     St.Free;
     Response.Free;
-    JObj.Free;
   End;
 end;
 
