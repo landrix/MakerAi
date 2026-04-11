@@ -42,6 +42,33 @@ uses
 
 implementation
 
+// Estos imports activan los initialization de cada driver de Chat,
+// que registran tanto TAiChatFactory (chat) como TAiEmbeddingFactory (embeddings).
+// Centralizado aquí para que cualquier app que use uMakerAi.Chat.Initializations
+// tenga todos los drivers disponibles automáticamente.
+uses
+  uMakerAi.Chat.OpenAi,
+  uMakerAi.Chat.Claude,
+  uMakerAi.Chat.Gemini,
+  uMakerAi.Chat.Ollama,
+  uMakerAi.Chat.Groq,
+  uMakerAi.Chat.DeepSeek,
+  uMakerAi.Chat.Kimi,
+  uMakerAi.Chat.Grok,
+  uMakerAi.Chat.Mistral,
+  uMakerAi.Chat.Cohere,
+  uMakerAi.Chat.LMStudio,
+  uMakerAi.Chat.GenericLLM,
+  // uMakerAi.Chat.Llamacpp,      // Solo demos — requiere makerai.gen.dll (Windows)
+  uMakerAi.Embeddings.OpenAi,
+  uMakerAi.Embeddings.Gemini,
+  uMakerAi.Embeddings.Ollama,
+  uMakerAi.Embeddings.Mistral,
+  uMakerAi.Embeddings.Cohere,
+  uMakerAi.Embeddings.LMStudio,
+  uMakerAi.Embeddings.Generic;
+  // uMakerAi.Embeddings.Llamacpp; // Solo demos — requiere makerai.gen.dll (Windows)
+
 Procedure InitChatModels;
 Var
   Model: String;
@@ -114,6 +141,18 @@ Begin
   TAiChatFactory.Instance.RegisterUserParam('Ollama', Model, 'ModelCaps',   '[cap_Image]');
   TAiChatFactory.Instance.RegisterUserParam('Ollama', Model, 'SessionCaps', '[cap_Image]');
   TAiChatFactory.Instance.RegisterUserParam('Ollama', Model, 'Tool_Active', 'True');
+
+  // ------- Gemma 4 (vision + audio + reasoning nativo, tamaños: e4b / 4b / 12b / 27b) ------
+  // gemma4 soporta imagen, audio y reasoning de forma nativa.
+  for Model in ['gemma4', 'gemma4:latest',
+                'gemma4:e2b', 'gemma4:e4b',
+                'gemma4:4b',  'gemma4:12b', 'gemma4:27b'] do
+  begin
+    TAiChatFactory.Instance.RegisterUserParam('Ollama', Model, 'ModelCaps',    '[cap_Image, cap_Audio, cap_Reasoning]');
+    TAiChatFactory.Instance.RegisterUserParam('Ollama', Model, 'SessionCaps',  '[cap_Image, cap_Audio, cap_Reasoning]');
+    TAiChatFactory.Instance.RegisterUserParam('Ollama', Model, 'ThinkingLevel', 'tlMedium');
+    TAiChatFactory.Instance.RegisterUserParam('Ollama', Model, 'Tool_Active',  'True');
+  end;
 
 
   // ------------------------- OPENAI ----------------------------------
@@ -451,78 +490,96 @@ Begin
 
   // ------------------------- GROQ ----------------------------------
   // https://console.groq.com/docs/models
-  // Ultima actualizacion: Feb 2026
+  // Ultima actualizacion: Abr 2026
   // ------------------------- GROQ ----------------------------------
 
   // --- Valores globales por defecto para todos los modelos Groq ---
-  TAiChatFactory.Instance.RegisterUserParam('Groq', 'Max_Tokens',  '8192');
-  TAiChatFactory.Instance.RegisterUserParam('Groq', 'Tool_Active', 'True');
-  TAiChatFactory.Instance.RegisterUserParam('Groq', 'ModelCaps',   '[]');
-  TAiChatFactory.Instance.RegisterUserParam('Groq', 'SessionCaps', '[]');
+  TAiChatFactory.Instance.RegisterUserParam('Groq', 'Max_Tokens',    '8192');
+  TAiChatFactory.Instance.RegisterUserParam('Groq', 'Tool_Active',   'True');
+  TAiChatFactory.Instance.RegisterUserParam('Groq', 'ModelCaps',     '[]');
+  TAiChatFactory.Instance.RegisterUserParam('Groq', 'SessionCaps',   '[]');
+  TAiChatFactory.Instance.RegisterUserParam('Groq', 'ThinkingLevel', 'tlDefault'); // Reset al cambiar modelo
+  TAiChatFactory.Instance.RegisterUserParam('Groq', 'Format',        '');          // Reset reasoning_format al cambiar modelo
 
   // ------- Modelos de produccion -- texto/chat ------
-  // llama-3.1-8b-instant: 131K ctx, 131K output, ultra-rapido
+  // llama-3.1-8b-instant: 131K ctx, 131K output, ultra-rapido (~560 t/s)
   Model := 'llama-3.1-8b-instant';
   TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Max_Tokens', '32768');
 
-  // llama-3.3-70b-versatile: 131K ctx, 32K output, alta calidad
+  // llama-3.3-70b-versatile: 131K ctx, 32K output, alta calidad (~280 t/s)
   Model := 'llama-3.3-70b-versatile';
   TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Max_Tokens', '32768');
 
-  // gpt-oss-20b: 131K ctx, 65K output, 1000 T/seg
+  // gpt-oss-20b: 131K ctx, 65K output, ~1000 t/s, reasoning (include_reasoning API)
   Model := 'openai/gpt-oss-20b';
-  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Max_Tokens', '65536');
+  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Max_Tokens',    '65536');
+  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'ModelCaps',    '[cap_Reasoning]');
+  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'SessionCaps',  '[cap_Reasoning]');
+  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'ThinkingLevel', 'tlMedium');
 
-  // gpt-oss-120b: 131K ctx, 65K output, 500 T/seg
+  // gpt-oss-120b: 131K ctx, 65K output, ~500 t/s, reasoning + vision (include_reasoning API)
   Model := 'openai/gpt-oss-120b';
-  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Max_Tokens', '65536');
+  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Max_Tokens',    '65536');
+  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'ModelCaps',    '[cap_Reasoning, cap_Image]');
+  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'SessionCaps',  '[cap_Reasoning, cap_Image]');
+  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'ThinkingLevel', 'tlMedium');
 
-  // ------- Modelos de razonamiento (preview) ------
-  // qwen-3-32b: 131K ctx, razonamiento nativo
-  Model := 'qwen/qwen-3-32b';
-  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Max_Tokens',    '32768');
+  // ------- Modelos de razonamiento ------
+  // qwen3-32b: 131K ctx, 40K output, reasoning nativo (reasoning_format API)
+  // reasoning_format: 'parsed' (message.reasoning), 'raw' (<think> tags), 'hidden' (solo resp)
+  // reasoning_effort: 'default' (thinking activo), 'none' (non-thinking)
+  // Temperatura recomendada: 0.6 (thinking), 0.7 (non-thinking)
+  Model := 'qwen/qwen3-32b';
+  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Max_Tokens',    '40960');
   TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'ModelCaps',    '[cap_Reasoning]');
   TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'SessionCaps',  '[cap_Reasoning]');
   TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'ThinkingLevel', 'tlMedium');
+  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Format',        'parsed');
 
-  // deepseek-r1-distill-llama-70b: 128K ctx, CoT reasoning
-  Model := 'deepseek-r1-distill-llama-70b';
-  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Max_Tokens',    '32768');
-  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'ModelCaps',    '[cap_Reasoning]');
-  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'SessionCaps',  '[cap_Reasoning]');
-  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'ThinkingLevel', 'tlMedium');
+  // DEPRECATED 10/02/25 — usar llama-3.3-70b-versatile
+  // deepseek-r1-distill-llama-70b eliminado
+  // DEPRECATED 07/14/25 — reemplazado por qwen/qwen3-32b
+  // qwen-qwq-32b eliminado
+  // DEPRECATED 04/14/25 — reemplazado por qwen/qwen3-32b
+  // deepseek-r1-distill-qwen-32b eliminado
 
-  // ------- Modelos con vision (preview) ------
-  // llama-4-scout: 131K ctx, vision + tools, eficiente
+  // ------- Modelos con vision ------
+  // llama-4-scout: 131K ctx, 8K output, vision (max 5 imgs, 20MB/URL, 4MB base64) + tools (~750 t/s)
   Model := 'meta-llama/llama-4-scout-17b-16e-instruct';
   TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Max_Tokens',  '8192');
   TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'ModelCaps',   '[cap_Image]');
   TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'SessionCaps', '[cap_Image]');
 
-  // llama-4-maverick: 131K ctx, vision + tools, mas potente
-  Model := 'meta-llama/llama-4-maverick-17b-128e-instruct';
-  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Max_Tokens',  '8192');
-  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'ModelCaps',   '[cap_Image]');
-  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'SessionCaps', '[cap_Image]');
+  // DEPRECATED 03/09/26 — usar meta-llama/llama-4-scout-17b-16e-instruct o openai/gpt-oss-120b
+  // meta-llama/llama-4-maverick-17b-128e-instruct eliminado
 
-  // kimi-k2: 131K ctx, agentic, alta capacidad de tools
+  // kimi-k2: 131K ctx, 16K output, agentic tools  (DEPRECATING 04/15/26 -> usar openai/gpt-oss-120b)
   Model := 'moonshotai/kimi-k2-instruct';
   TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Max_Tokens', '16384');
 
+  // kimi-k2-instruct-0905: 262K ctx (mayor en GroqCloud), 16K output  (DEPRECATING 04/15/26)
+  Model := 'moonshotai/kimi-k2-instruct-0905';
+  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Max_Tokens', '16384');
+
   // ------- Sistemas agentes con herramientas integradas ------
-  // Compound: web search + code execution nativo; Gap=[] -> InternalRunCompletions
-  // https://console.groq.com/docs/agentic-tooling/compound-beta
-  Model := 'compound-beta';
+  // Compound: sistemas agenticos server-side con web search + code execution + browser automation
+  // https://console.groq.com/docs/compound
+  // groq/compound: multiples herramientas iterativas; groq/compound-mini: 1 herramienta (~3x mas rapido)
+  Model := 'groq/compound';
   TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'ModelCaps',   '[cap_WebSearch, cap_CodeInterpreter]');
   TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'SessionCaps', '[cap_WebSearch, cap_CodeInterpreter]');
   TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Tool_Active', 'False');
   TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Max_Tokens',  '8192');
 
-  Model := 'compound-beta-mini';
+  Model := 'groq/compound-mini';
   TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'ModelCaps',   '[cap_WebSearch, cap_CodeInterpreter]');
   TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'SessionCaps', '[cap_WebSearch, cap_CodeInterpreter]');
   TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Tool_Active', 'False');
   TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Max_Tokens',  '8192');
+
+  // Aliases para compatibilidad con codigo previo
+  TAiChatFactory.Instance.RegisterCustomModel('Groq', 'compound-beta',      'groq/compound');
+  TAiChatFactory.Instance.RegisterCustomModel('Groq', 'compound-beta-mini', 'groq/compound-mini');
 
   // ------- Audio STT -- cap_Audio: procesa audio nativo ------
   // Usar con ChatMode = cmTranscription
@@ -540,33 +597,23 @@ Begin
   // ------- Audio TTS -- ModelCaps=[]: usa endpoint TTS dedicado ------
   // Gap=[cap_GenAudio] activa InternalRunSpeechGeneration
   // https://console.groq.com/docs/text-to-speech
-  // Orpheus TTS (Canopy Labs) -- reemplaza playai-tts (decommissioned dic 2025)
+  // Orpheus TTS (Canopy Labs) -- unico TTS disponible en Groq (playai-tts decommissioned 12/31/25)
   // https://console.groq.com/docs/text-to-speech/orpheus
+  // Voces ingles: autumn, diana, hannah, austin, daniel, troy
   Model := 'canopylabs/orpheus-v1-english';
   TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'ModelCaps',   '[]');
   TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'SessionCaps', '[cap_GenAudio]');
   TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Tool_Active', 'False');
-  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Voice',       'austin');  // Voces Groq Orpheus: autumn, diana, hannah, austin, daniel, troy
+  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Voice',       'austin');
 
-  // Arabic TTS (Orpheus)
+  // Voces arabe: fahad, sultan, lulwa, noura
   Model := 'canopylabs/orpheus-arabic-saudi';
   TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'ModelCaps',   '[]');
   TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'SessionCaps', '[cap_GenAudio]');
   TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Tool_Active', 'False');
-  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Voice',       'lulwa');  // Voces Groq Orpheus Arabic: fahad, sultan, lulwa, noura
+  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Voice',       'lulwa');
 
-  // Legacy (decommissioned dic 2025 - mantenidos por compatibilidad)
-  Model := 'playai-tts';
-  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'ModelCaps',   '[]');
-  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'SessionCaps', '[cap_GenAudio]');
-  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Tool_Active', 'False');
-  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Voice',       'Arista-PlayAI');
-
-  Model := 'playai-tts-arabic';
-  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'ModelCaps',   '[]');
-  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'SessionCaps', '[cap_GenAudio]');
-  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Tool_Active', 'False');
-  TAiChatFactory.Instance.RegisterUserParam('Groq', Model, 'Voice',       'Ahmad-PlayAI');
+  // playai-tts y playai-tts-arabic: ELIMINADOS (decommissioned 12/31/25)
 
   // ===========================================================================
   // CLAUDE — CONFIGURACION GLOBAL
@@ -851,7 +898,7 @@ Begin
 
   // ------------------------- GROK ----------------------------------
   // https://docs.x.ai/developers/models
-  // Ultima actualizacion: Feb 2026
+  // Ultima actualizacion: Abr 2026
   // ------------------------- GROK ----------------------------------
 
   // --- Valores globales por defecto para todos los modelos Grok ---
@@ -860,46 +907,82 @@ Begin
   TAiChatFactory.Instance.RegisterUserParam('Grok', 'ModelCaps',   '[]');
   TAiChatFactory.Instance.RegisterUserParam('Grok', 'SessionCaps', '[]');
 
-  // ------- Grok 3 (131K ctx, texto + tools) ------
-  // grok-3: hereda defaults, no necesita config adicional
+  // ------- Grok 3 (131K ctx, texto + tools, sin vision, sin reasoning) ------
+  // grok-3 y grok-3-fast heredan defaults, no necesitan config adicional
 
-  // ------- Grok 3 Mini (131K ctx, texto + reasoning + tools) ------
+  // ------- Grok 3 Mini (131K ctx, texto + reasoning + tools, sin vision) ------
+  // reasoning_effort soportado: 'low' / 'high'
   Model := 'grok-3-mini';
   TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'ModelCaps',    '[cap_Reasoning]');
   TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'SessionCaps',  '[cap_Reasoning]');
   TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'ThinkingLevel', 'tlLow');
 
-  // ------- Grok 4-0709 (256K ctx, vision + reasoning + tools) ------
+  Model := 'grok-3-mini-fast';
+  TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'ModelCaps',    '[cap_Reasoning]');
+  TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'SessionCaps',  '[cap_Reasoning]');
+  TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'ThinkingLevel', 'tlLow');
+
+  // ------- Grok 2 Vision (vision, texto + tools) ------
+  Model := 'grok-2-vision-1212';
+  TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'ModelCaps',   '[cap_Image]');
+  TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'SessionCaps', '[cap_Image]');
+
+  // ------- Grok 4 / grok-4-0709 (256K ctx, vision + reasoning siempre activo + tools) ------
+  // grok-4 NO acepta reasoning_effort ni frequency/presence/stop
+  TAiChatFactory.Instance.RegisterCustomModel('Grok', 'grok-4', 'grok-4-0709');
   Model := 'grok-4-0709';
   TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'ModelCaps',   '[cap_Image, cap_Reasoning]');
   TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'SessionCaps', '[cap_Image, cap_Reasoning]');
+  TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'Max_Tokens',  '32000');
 
   // ------- Grok 4 Fast (2M ctx, vision + tools) ------
   // https://docs.x.ai/developers/models#grok-4-fast
   Model := 'grok-4-fast-non-reasoning';
   TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'ModelCaps',   '[cap_Image]');
   TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'SessionCaps', '[cap_Image]');
+  TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'Max_Tokens',  '32000');
 
   Model := 'grok-4-fast-reasoning';
   TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'ModelCaps',   '[cap_Image, cap_Reasoning]');
   TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'SessionCaps', '[cap_Image, cap_Reasoning]');
-  TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'ThinkingLevel', 'tlMedium');
+  TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'Max_Tokens',  '32000');
 
   // ------- Grok 4.1 Fast (2M ctx, vision + tools) ------
+  Model := 'grok-4-1';
+  TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'ModelCaps',   '[cap_Image]');
+  TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'SessionCaps', '[cap_Image]');
+  TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'Max_Tokens',  '32000');
+
   Model := 'grok-4-1-fast-non-reasoning';
   TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'ModelCaps',   '[cap_Image]');
   TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'SessionCaps', '[cap_Image]');
+  TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'Max_Tokens',  '32000');
 
   Model := 'grok-4-1-fast-reasoning';
   TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'ModelCaps',   '[cap_Image, cap_Reasoning]');
   TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'SessionCaps', '[cap_Image, cap_Reasoning]');
-  TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'ThinkingLevel', 'tlMedium');
+  TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'Max_Tokens',  '32000');
+
+  // ------- Grok 4.20 (flagship mar 2026, 2M ctx, vision + tools) ------
+  Model := 'grok-4.20-0309-non-reasoning';
+  TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'ModelCaps',   '[cap_Image]');
+  TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'SessionCaps', '[cap_Image]');
+  TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'Max_Tokens',  '32000');
+
+  Model := 'grok-4.20-0309-reasoning';
+  TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'ModelCaps',   '[cap_Image, cap_Reasoning]');
+  TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'SessionCaps', '[cap_Image, cap_Reasoning]');
+  TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'Max_Tokens',  '32000');
+
+  Model := 'grok-4.20-multi-agent-0309';
+  TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'ModelCaps',   '[cap_Image, cap_Reasoning]');
+  TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'SessionCaps', '[cap_Image, cap_Reasoning]');
+  TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'Max_Tokens',  '32000');
 
   // ------- Grok Code Fast (256K ctx, codigo + reasoning + tools, sin vision) ------
   Model := 'grok-code-fast-1';
   TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'ModelCaps',    '[cap_Reasoning]');
   TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'SessionCaps',  '[cap_Reasoning]');
-  TAiChatFactory.Instance.RegisterUserParam('Grok', Model, 'ThinkingLevel', 'tlMedium');
 
   // ------- Generacion de imagenes ------
   // ModelCaps=[]: usa endpoint dedicado; Gap=[cap_GenImage] activa InternalRunImageGeneration

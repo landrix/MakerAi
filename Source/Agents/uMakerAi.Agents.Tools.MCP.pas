@@ -1,4 +1,4 @@
-// MIT License
+﻿// MIT License
 // MakerAI - Sistema de Agentes v3.4
 // Adaptador MCP → IAiTool: expone cada herramienta de un servidor MCP
 // como un IAiTool intercambiable dentro del TAiToolRegistry.

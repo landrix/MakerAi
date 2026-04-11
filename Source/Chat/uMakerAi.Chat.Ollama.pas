@@ -1,4 +1,4 @@
-// IT License
+﻿// IT License
 //
 // Copyright (c) <year> <copyright holders>
 //
@@ -46,7 +46,7 @@ uses
 {$IF CompilerVersion < 35}
   uJSONHelper,
 {$ENDIF}
-  uMakerAi.ParamsRegistry, uMakerAi.Chat, uMakerAi.Core, uMakerAi.Embeddings, uMakerAi.Utils.CodeExtractor, uMakerAi.Embeddings.Core, uMakerAi.Chat.Messages;
+  uMakerAi.ParamsRegistry, uMakerAi.Chat, uMakerAi.Core, uMakerAi.Utils.CodeExtractor, uMakerAi.Chat.Messages;
 
 type
 
@@ -54,6 +54,7 @@ type
   Private
     Fkeep_alive: String;
     FTmpToolCallsStr: string;
+    FAsyncResMsg: TAiChatMessage; // ResMsg pendiente entre rounds async de tool calls
     procedure Setkeep_alive(const Value: String);
   Protected
     Procedure OnInternalReceiveData(const Sender: TObject; AContentLength, AReadCount: Int64; var AAbort: Boolean); Override;
@@ -82,17 +83,6 @@ type
     property keep_alive: String read Fkeep_alive write Setkeep_alive;
   End;
 
-  TAiOllamaEmbeddings = class(TAiEmbeddings)
-  Public
-    Constructor Create(aOwner: TComponent); Override;
-    Destructor Destroy; Override;
-    Function CreateEmbedding(aInput, aUser: String; aDimensions: Integer = -1; aModel: String = ''; aEncodingFormat: String = 'float'): TAiEmbeddingData; Override;
-    Procedure ParseEmbedding(JObj: TJSonObject); Override;
-    class function GetDriverName: string; override;
-    class function CreateInstance(aOwner: TComponent): TAiEmbeddings; override;
-    class procedure RegisterDefaultParams(Params: TStrings); override;
-  end;
-
 procedure Register;
 
 implementation
@@ -102,7 +92,7 @@ Const
 
 procedure Register;
 begin
-  RegisterComponents('MakerAI', [TAiOllamaChat, TAiOllamaEmbeddings]);
+  RegisterComponents('MakerAI', [TAiOllamaChat]);
 end;
 
 class function TAiOllamaChat.GetDriverName: string;
@@ -184,20 +174,12 @@ begin
         // Ollama ahora sé incluye un 'id', pero lo generamos como fallback por si acaso.
         LToolCall.Id := LToolCallObj.GetValue<string>('id', 'call_' + TGuid.NewGuid.ToString);
         LToolCall.Name := LFunctionObj.GetValue<string>('name', '');
-        LToolCall.Tipo := 'function';
+        LToolCall.&Type := 'function';
 
         if LFunctionObj.TryGetValue<TJSonObject>('arguments', LArgumentsObj) then
-        begin
-          LToolCall.Arguments := LArgumentsObj.Format;
-          for LPair in LArgumentsObj do
-          begin
-            LToolCall.Params.Values[LPair.JsonString.Value] := LPair.JsonValue.Value;
-          end;
-        end
+          LToolCall.Arguments := LArgumentsObj.Format
         else
-        begin
           LToolCall.Arguments := '{}';
-        end;
 
         Result.Add(LToolCall.Id, LToolCall);
       except
@@ -214,10 +196,6 @@ Var
   Msg: TAiChatMessage;
   JObj: TJSonObject;
   jImages: TJSonArray;
-
-  Base64: String;
-  MediaArr: TAiMediaFilesArray;
-  Mime: String;
 begin
   Result := TJSonArray.Create;
 
@@ -233,27 +211,27 @@ begin
       JObj.AddPair('name', Msg.FunctionName);
 
     JObj.AddPair('role', Msg.Role);
+
+    // La API de Ollama SOLO acepta content:string + images:[base64...].
+    // No soporta content como array de partes (formato OpenAI multipart).
+    // Imágenes y audio se envían ambos en el campo 'images' en base64.
     JObj.AddPair('content', Msg.Prompt);
 
-    MediaArr := Msg.MediaFiles.GetMediaList([Tfc_Image], False);
-
-    If (Length(MediaArr) > 0) then
+    jImages := nil;
+    For J := 0 to Msg.MediaFiles.Count - 1 do
     Begin
-
-      jImages := TJSonArray.Create;
-      JObj.AddPair('images', jImages);
-
-      For J := 0 to Msg.MediaFiles.Count - 1 do // Open Ai permite subir el Base64 o el Url, siempre se sube el Base64, por estandar
-      Begin
-        Base64 := Msg.MediaFiles[J].Base64;
-        Mime := Msg.MediaFiles[J].MimeType;
-
+      if Msg.MediaFiles[J].FileCategory in [Tfc_Image, Tfc_Audio] then
+      begin
+        if not Assigned(jImages) then
+        begin
+          jImages := TJSonArray.Create;
+          JObj.AddPair('images', jImages);
+        end;
         jImages.Add(Msg.MediaFiles[J].Base64);
-      End;
+      end;
     End;
 
     If Msg.Tool_calls <> '' then
-
 {$IF CompilerVersion < 35}
       JObj.AddPair('tool_calls', TJSONUtils.ParseAsArray(Msg.Tool_calls));
 {$ELSE}
@@ -508,7 +486,9 @@ begin
 
     If FClient.Asynchronous = False then
     Begin
-      if Res.StatusCode = 200 then
+      if not Assigned(Res) then
+        Raise Exception.Create('Error de conexion: no se recibio respuesta del servidor Ollama')
+      else if Res.StatusCode = 200 then
       Begin
         Var
         S := Res.ContentAsString;
@@ -611,13 +591,28 @@ var
       end;
     end;
 
-    LFinalMsg := TAiChatMessage.Create('', 'assistant');
+    // Reutilizar el ResMsg del round anterior si existe (preserva MediaFiles
+    // agregados durante tool calls). Si no, crear uno nuevo.
+    var LOwnsMsg: Boolean;
+    if Assigned(FAsyncResMsg) then
+    begin
+      LFinalMsg  := FAsyncResMsg;
+      FAsyncResMsg := nil; // consumido
+      LOwnsMsg   := False;
+    end
+    else
+    begin
+      LFinalMsg := TAiChatMessage.Create('', 'assistant');
+      LOwnsMsg  := True;
+    end;
+
     try
       ParseChat(AJson, LFinalMsg);
     except
       on E: Exception do
       begin
-        LFinalMsg.Free;
+        if LOwnsMsg then
+          LFinalMsg.Free;
         raise;
       end;
     end;
@@ -637,6 +632,7 @@ begin
   begin
     FBusy := False;
     FTmpToolCallsStr := '';
+    FAsyncResMsg := nil; // descartar ResMsg pendiente al abortar
     if Assigned(FOnReceiveDataEnd) then
       FOnReceiveDataEnd(Self, nil, nil, 'system', 'abort');
     Exit;
@@ -872,6 +868,9 @@ begin
         for LToolCall in LFunciones.Values do
         begin
           LToolMsg := TAiChatMessage.Create(LToolCall.Response, 'tool', LToolCall.Id, LToolCall.Name);
+          for var LMF in LToolCall.MediaFiles do
+            LToolMsg.AddMediaFile(LMF);
+          LToolCall.MediaFiles.OwnsObjects := False;
           LToolMsg.Id := FMessages.Count + 1;
           FMessages.Add(LToolMsg);
         end;
@@ -881,6 +880,10 @@ begin
         ResMsg.Content := '';
         ResMsg.Tool_calls := '';
         FLastContent := '';
+        // En modo async, preservar ResMsg entre rounds para que ProcessFinalJsonObject
+        // lo reutilice y conserve los MediaFiles agregados durante tool calls.
+        if Self.Asynchronous then
+          FAsyncResMsg := ResMsg;
         Self.Run(nil, ResMsg);
       end;
     finally
@@ -894,7 +897,7 @@ begin
     // --- CASO B: Respuesta de texto normal o final de cadena ---
 
     // B.1 Extracción automática de bloques de código si se solicita
-    if (tfc_ExtracttextFile in NativeOutputFiles) and (ResMsg.Content <> '') then
+    if (cap_ExtractCode in ModelConfig.SessionCaps) and (ResMsg.Content <> '') then
     begin
       Code := TMarkdownCodeExtractor.Create;
       try
@@ -1153,148 +1156,8 @@ begin
   end;
 end;
 
-{ TAiOlamalEmbeddings }
-
-constructor TAiOllamaEmbeddings.Create(aOwner: TComponent);
-begin
-  inherited;
-  ApiKey := '@OLLAMA_API_KEY';
-  Url := GlAIUrl;
-  FDimensions := 1024;
-  FModel := 'snowflake-arctic-embed';
-
-end;
-
-{ TOllEmbeddings }
-
-{ modelos disponibles en Ollama a mayo 2024 Library https://ollama.com/library
-  Model := 'mxbai-embed-large'; //Vector[1024]
-  Model := 'nomic-embed-text'; // Vector[768]
-  Model := 'all-minilm';      //Vector[384]
-  Model := 'snowflake-arctic-embed'; //Vector[1024]    //Esta es la mejor versión a mayo/2024
-
-  Url para llamado http://IPOLLAMASERVER:11434/
-}
-
-function TAiOllamaEmbeddings.CreateEmbedding(aInput, aUser: String; aDimensions: Integer; aModel, aEncodingFormat: String): TAiEmbeddingData;
-Var
-  Client: TNetHTTPClient;
-  Headers: TNetHeaders;
-  JObj: TJSonObject;
-  Res: IHTTPResponse;
-  Response: TStringStream;
-  St: TStringStream;
-  sUrl: String;
-begin
-
-  If aModel = '' then
-    aModel := FModel;
-
-  If aDimensions <= 0 then
-    aDimensions := FDimensions;
-
-  Client := TNetHTTPClient.Create(Nil);
-{$IF CompilerVersion >= 35}
-  Client.SynchronizeEvents := False;
-{$ENDIF}
-  St := TStringStream.Create('', TEncoding.UTF8);
-  Response := TStringStream.Create('', TEncoding.UTF8);
-  sUrl := Url + 'api/embeddings';
-
-  Try
-    JObj := TJSonObject.Create;
-    try
-      JObj.AddPair('prompt', aInput);
-      JObj.AddPair('model', aModel);
-      JObj.AddPair('user', aUser);
-      JObj.AddPair('dimensions', aDimensions);
-      JObj.AddPair('encoding_format', aEncodingFormat);
-      St.WriteString(JObj.ToJSON);
-    finally
-      JObj.Free;
-    end;
-
-    St.Position := 0;
-
-    Headers := [TNetHeader.Create('Authorization', 'Bearer ' + ApiKey)];
-    Client.ContentType := 'application/json';
-
-    Res := Client.Post(sUrl, St, Response, Headers);
-
-    if Res.StatusCode = 200 then
-    Begin
-      JObj := TJSonObject(TJSonObject.ParseJSONValue(Res.ContentAsString));
-      try
-        ParseEmbedding(JObj);
-      finally
-        JObj.Free;
-      end;
-      Result := Self.Data;
-    End
-    else
-    begin
-      Raise Exception.CreateFmt('Error Received: %d, %s', [Res.StatusCode, Res.ContentAsString]);
-    end;
-
-  Finally
-    Client.Free;
-    St.Free;
-    Response.Free;
-  End;
-end;
-
-destructor TAiOllamaEmbeddings.Destroy;
-begin
-
-  inherited;
-end;
-
-procedure TAiOllamaEmbeddings.ParseEmbedding(JObj: TJSonObject);
-Var
-  JArr: TJSonArray;
-  J: Integer;
-  Valor: Double;
-begin
-  // A diferencia de openAi el embedding es uno solo y no un arreglo
-
-  JArr := JObj.GetValue<TJSonArray>('embedding');
-  J := JArr.Count;
-  SetLength(FData, J);
-
-  // FillChar(FData, Length(FData) * SizeOf(Double), 0);
-
-  For J := 0 to JArr.Count - 1 do
-  Begin
-    Valor := JArr.Items[J].GetValue<Double>;
-    FData[J] := Valor;
-  End;
-
-  // FData := Emb;
-end;
-
-{ TAiOllamaEmbeddings - Factory class methods }
-
-class function TAiOllamaEmbeddings.GetDriverName: string;
-begin
-  Result := 'Ollama';
-end;
-
-class function TAiOllamaEmbeddings.CreateInstance(aOwner: TComponent): TAiEmbeddings;
-begin
-  Result := TAiOllamaEmbeddings.Create(aOwner);
-end;
-
-class procedure TAiOllamaEmbeddings.RegisterDefaultParams(Params: TStrings);
-begin
-  Params.Values['ApiKey'] := '@OLLAMA_API_KEY';
-  Params.Values['Url'] := GlAIUrl;
-  Params.Values['Model'] := 'snowflake-arctic-embed';
-  Params.Values['Dimensions'] := '1024';
-end;
-
 Initialization
 
 TAiChatFactory.Instance.RegisterDriver(TAiOllamaChat);
-TAiEmbeddingFactory.Instance.RegisterDriver(TAiOllamaEmbeddings);
 
 end.

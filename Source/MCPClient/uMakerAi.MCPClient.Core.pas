@@ -1,4 +1,4 @@
-// MIT License
+﻿// MIT License
 //
 // Copyright (c) <year> <copyright holders>
 //
@@ -39,7 +39,7 @@ uses
   System.SysUtils, System.Classes, System.JSON, System.Generics.Collections,
   System.IOUtils, System.Net.URLClient, System.NetEncoding,
   System.Net.HttpClient, System.Net.Mime, System.Net.HttpClientComponent,
-  System.Threading, System.Diagnostics, System.Types,
+  System.Threading, System.Diagnostics, System.Types, System.SyncObjs,
 
 {$IFDEF MSWINDOWS}
   Winapi.Windows,
@@ -74,6 +74,7 @@ type
     FServerProcess: TInteractiveProcessInfo;
     FOwnsServerProcess: Boolean;
     FOnStreamMessage: TMCPStreamMessageEvent;
+    FCallLock: TCriticalSection;  // Serializa llamadas concurrentes al mismo servidor
     procedure SetTransportType(const Value: TToolTransportType);
     procedure SetAvailable(const Value: Boolean);
     procedure SetEnabled(const Value: Boolean);
@@ -124,6 +125,10 @@ type
     function ListTools: TJSONObject; virtual;
     function CallTool(const AToolName: string; AArguments: TJSONObject; AExtractedMedia: TObjectList<TAiMediaFile>): TJSONObject; overload; virtual;
     function CallTool(const AToolName: string; AArguments: TStrings; AExtractedMedia: TObjectList<TAiMediaFile>): TJSONObject; overload; virtual;
+
+    // Desconecta el servidor (conexión persistente Opción D). Llamar para
+    // liberar recursos cuando ya no se necesite el servidor.
+    procedure Disconnect; virtual;
 
     // Propiedades p?blicas
     property Name: string read FName write FName;
@@ -185,6 +190,9 @@ type
     function ListTools: TJSONObject; override;
     function CallTool(const AToolName: string; AArguments: TJSONObject; AExtractedMedia: TObjectList<TAiMediaFile>): TJSONObject; overload; override;
     function CallTool(const AToolName: string; AArguments: TStrings; AExtractedMedia: TObjectList<TAiMediaFile>): TJSONObject; overload; override;
+
+    // Detiene el proceso servidor y libera la conexión persistente
+    procedure Disconnect; override;
   end;
 
   TMCPClientHttp = class(TMCPClientCustom)
@@ -288,6 +296,34 @@ type
 
 implementation
 
+// ---------------------------------------------------------------------------
+// Log a disco para debug de shutdown — solo activo en builds DEBUG
+// ---------------------------------------------------------------------------
+{$IFDEF DEBUG}
+var
+  GMCPShutdownLog: string = 'C:\temp\mcp_shutdown.log';
+
+procedure MCPLog(const Msg: string);
+var
+  F: TextFile;
+begin
+  try
+    AssignFile(F, GMCPShutdownLog);
+    if System.SysUtils.FileExists(GMCPShutdownLog) then
+      Append(F)
+    else
+      Rewrite(F);
+    try
+      WriteLn(F, FormatDateTime('hh:nn:ss.zzz', Now) + '  ' + Msg);
+    finally
+      CloseFile(F);
+    end;
+  except
+    // silencioso — no queremos AV dentro del logger
+  end;
+end;
+{$ENDIF DEBUG}
+
 { TMCPClientCustom }
 
 function TMCPClientCustom.CallTool(const AToolName: string; AArguments: TJSONObject; AExtractedMedia: TObjectList<TAiMediaFile>): TJSONObject;
@@ -305,6 +341,7 @@ Var
   List: TStringList;
 begin
   inherited Create(AOwner);
+  FCallLock := TCriticalSection.Create;
   FName := 'MCPClient'; // Valor por defecto
   FTools := TStringList.Create;
   FParams := TStringList.Create;
@@ -322,14 +359,26 @@ end;
 
 destructor TMCPClientCustom.Destroy;
 begin
+  {$IFDEF DEBUG} MCPLog('TMCPClientCustom.Destroy BEGIN name=' + FName); {$ENDIF}
 
   if FOwnsServerProcess then
+  begin
+    {$IFDEF DEBUG} MCPLog('  InternalStopLocalServerProcess...'); {$ENDIF}
     InternalStopLocalServerProcess;
+    {$IFDEF DEBUG} MCPLog('  InternalStopLocalServerProcess OK'); {$ENDIF}
+  end;
 
+  {$IFDEF DEBUG} MCPLog('  FTools.Free...'); {$ENDIF}
   FTools.Free;
+  {$IFDEF DEBUG} MCPLog('  FParams.Free...'); {$ENDIF}
   FParams.Free;
+  {$IFDEF DEBUG} MCPLog('  FDisabledFunctions.Free...'); {$ENDIF}
   FDisabledFunctions.Free;
+  {$IFDEF DEBUG} MCPLog('  FEnvVars.Free...'); {$ENDIF}
   FEnvVars.Free;
+  {$IFDEF DEBUG} MCPLog('  FCallLock.Free...'); {$ENDIF}
+  FCallLock.Free;
+  {$IFDEF DEBUG} MCPLog('TMCPClientCustom.Destroy END name=' + FName); {$ENDIF}
   inherited;
 end;
 
@@ -559,7 +608,7 @@ begin
           MediaFile := TAiMediaFile.Create;
 
           // Generar nombre de archivo con extensi?n apropiada
-          LFileName := Format('mcp-media-%d.%s', [AExtractedMedia.Count + 1, GetFileExtensionFromMimeType(LMimeType)]);
+          LFileName := Format('mcp-media-%d%s', [AExtractedMedia.Count + 1, GetFileExtensionFromMimeType(LMimeType)]);
 
           MediaFile.LoadFromBase64(LFileName, LBase64Data);
           AExtractedMedia.Add(MediaFile);
@@ -634,6 +683,11 @@ begin
   FURL := Value;
 end;
 
+procedure TMCPClientCustom.Disconnect;
+begin
+  // Implementación base vacía: las subclases con conexión persistente la sobreescriben
+end;
+
 { TMCPClientStdIo }
 
 constructor TMCPClientStdIo.Create(AOwner: TComponent);
@@ -650,19 +704,29 @@ destructor TMCPClientStdIo.Destroy;
 var
   LJson: TJSONObject;
 begin
-  InternalStopServerProcess; // Asegurarse de que todo est? detenido
+  // La conexión persistente se cierra aquí automáticamente.
+  // No es necesario llamar Disconnect() antes de liberar el componente.
+  {$IFDEF DEBUG} MCPLog('TMCPClientStdIo.Destroy BEGIN name=' + Self.Name); {$ENDIF}
+  {$IFDEF DEBUG} MCPLog('  InternalStopServerProcess...'); {$ENDIF}
+  InternalStopServerProcess;
+  {$IFDEF DEBUG} MCPLog('  InternalStopServerProcess OK'); {$ENDIF}
   if Assigned(FIncomingMessages) then
   begin
+    {$IFDEF DEBUG} MCPLog('  FIncomingMessages.DoShutDown...'); {$ENDIF}
     FIncomingMessages.DoShutDown;
     while FIncomingMessages.PopItem(LJson) = wrSignaled do
     Begin
       If LJson = nil then
         Break;
-      LJson.Free; // Vaciar la cola para liberar memoria
+      LJson.Free;
     End;
+    {$IFDEF DEBUG} MCPLog('  FreeAndNil(FIncomingMessages)...'); {$ENDIF}
     FreeAndNil(FIncomingMessages);
+    {$IFDEF DEBUG} MCPLog('  FIncomingMessages freed OK'); {$ENDIF}
   end;
+  {$IFDEF DEBUG} MCPLog('TMCPClientStdIo.Destroy END - calling inherited...'); {$ENDIF}
   inherited;
+  {$IFDEF DEBUG} MCPLog('TMCPClientStdIo.Destroy inherited OK'); {$ENDIF}
 end;
 
 function TMCPClientStdIo.IsServerRunning: Boolean;
@@ -670,41 +734,59 @@ begin
   Result := FIsRunning and Assigned(FInteractiveProcess) and FInteractiveProcess.IsRunning;
 end;
 
-// --- M?todos de Ciclo de Vida Completo ---
+// --- Métodos de Ciclo de Vida Completo ---
+
+// --- Opción D: conexión persistente StdIo ---
+// El servidor se inicia una sola vez y permanece activo entre llamadas.
+// ListTools y CallTool reutilizan la conexión existente si está disponible.
+// Ciclo de vida:
+//   - El servidor se inicia automáticamente en la primera llamada a ListTools o CallTool.
+//   - Permanece activo para reutilizar la conexión en llamadas siguientes.
+//   - Se detiene automáticamente al destruir el componente (no hace falta llamar Disconnect).
+//   - Llamar Disconnect() explícitamente solo si se quiere liberar el proceso antes de destruir.
 
 function TMCPClientStdIo.ListTools: TJSONObject;
 var
   InitResponse: TJSONObject;
 begin
   Result := nil;
-  DoLog('Executing full cycle for ListTools...');
-  InternalStartServerProcess;
+  FCallLock.Enter;
   try
-    if not IsServerRunning then
+    // Si el servidor ya está corriendo reutilizamos la conexión
+    if IsServerRunning then
     begin
-      DoLog('Failed to start server. Aborting ListTools.');
+      DoLog('ListTools: servidor activo, reutilizando conexión.');
+      Result := InternalListTools;
       Exit;
     end;
 
-    // Handshake
+    DoLog('ListTools: iniciando servidor...');
+    InternalStartServerProcess;
+    if not IsServerRunning then
+    begin
+      DoLog('ListTools: fallo al iniciar servidor.');
+      Available := False;
+      Exit;
+    end;
+
+    // Handshake inicial
     InitResponse := InternalInitialize;
     if not Assigned(InitResponse) then
     begin
-      DoLog('Initialization failed. Aborting ListTools.');
+      DoLog('ListTools: fallo en initialize. Deteniendo servidor.');
+      InternalStopServerProcess;
+      Available := False;
       Exit;
     end;
-    InitResponse.Free; // No necesitamos la respuesta, solo saber que funcion?
+    InitResponse.Free;
     InternalSendInitializedNotification;
+    Sleep(200); // Pausa para que el servidor procese la notificación
 
-    // CAMBIO: A?adir una peque?a pausa para asegurar que el servidor procese la notificaci?n.
-    Sleep(200); // 100ms es un valor seguro.
-
-    // Realizar la llamada real
+    // El servidor queda activo para futuras llamadas
+    DoLog('ListTools: conexión persistente establecida.');
     Result := InternalListTools;
-
   finally
-    InternalStopServerProcess;
-    DoLog('Full cycle for ListTools finished.');
+    FCallLock.Leave;
   end;
 end;
 
@@ -713,35 +795,47 @@ var
   InitResponse: TJSONObject;
 begin
   Result := nil;
-  DoLog(Format('Executing full cycle for CallTool: %s', [AToolName]));
-  InternalStartServerProcess;
+  // Serializar llamadas concurrentes al mismo servidor (race condition cuando
+  // ParseChat lanza múltiples TTask con herramientas del mismo servidor MCP).
+  // TCriticalSection en Delphi es reentrante: el overload TStrings que llama
+  // a este m?todo no genera deadlock.
+  FCallLock.Enter;
   try
-    if not IsServerRunning then
+    // Si el servidor ya está corriendo reutilizamos la conexión
+    if IsServerRunning then
     begin
-      DoLog('Failed to start server. Aborting CallTool.');
-      FreeAndNil(AArguments); // Liberar los argumentos si no se van a usar
+      DoLog(Format('CallTool: servidor activo, llamando %s.', [AToolName]));
+      Result := InternalCallTool(AToolName, AArguments, AExtractedMedia);
       Exit;
     end;
 
-    // Handshake
+    DoLog(Format('CallTool: iniciando servidor para %s...', [AToolName]));
+    InternalStartServerProcess;
+    if not IsServerRunning then
+    begin
+      DoLog('CallTool: fallo al iniciar servidor.');
+      Available := False;
+      Exit;
+    end;
+
+    // Handshake inicial
     InitResponse := InternalInitialize;
     if not Assigned(InitResponse) then
     begin
-      DoLog('Initialization failed. Aborting CallTool.');
-      FreeAndNil(AArguments); // Liberar los argumentos si no se van a usar
+      DoLog('CallTool: fallo en initialize. Deteniendo servidor.');
+      InternalStopServerProcess;
+      Available := False;
       Exit;
     end;
     InitResponse.Free;
     InternalSendInitializedNotification;
+    Sleep(200); // Pausa para que el servidor procese la notificación
 
-    Sleep(200);
-
-    // Realizar la llamada real
+    // El servidor queda activo para futuras llamadas
+    DoLog(Format('CallTool: conexión persistente establecida, llamando %s.', [AToolName]));
     Result := InternalCallTool(AToolName, AArguments, AExtractedMedia);
-
   finally
-    InternalStopServerProcess;
-    DoLog(Format('Full cycle for CallTool: %s finished.', [AToolName]));
+    FCallLock.Leave;
   end;
 end;
 
@@ -759,8 +853,19 @@ begin
       ArgsObject.AddPair(AArguments.Names[i], AArguments.ValueFromIndex[i]);
     end;
   end;
-  // Llamar a la versi?n principal, que ahora es due?a de ArgsObject
+  // Llamar a la versión principal, que ahora es dueña de ArgsObject
   Result := CallTool(AToolName, ArgsObject, AExtractedMedia);
+end;
+
+procedure TMCPClientStdIo.Disconnect;
+begin
+  FCallLock.Enter;
+  try
+    DoLog('Disconnect: cerrando conexión persistente.');
+    InternalStopServerProcess;
+  finally
+    FCallLock.Leave;
+  end;
 end;
 
 procedure TMCPClientStdIo.InternalStartServerProcess;
@@ -774,6 +879,11 @@ begin
     DoLog('Server is already running.');
     Exit;
   end;
+
+  // Limpiar estado zombie: el proceso pudo haber muerto inesperadamente dejando
+  // FIsRunning=True y FReadThread/FInteractiveProcess asignados pero inválidos.
+  // Invocar Stop garantiza liberación antes de crear objetos nuevos.
+  InternalStopServerProcess;
 
   DoLog('Starting MCP server process...');
   DoStatusUpdate('Starting server...');
@@ -838,23 +948,47 @@ end;
 
 procedure TMCPClientStdIo.InternalStopServerProcess;
 begin
-  if not IsServerRunning then
+  // Salida rápida solo si ya estamos completamente detenidos (todos los campos limpios).
+  // NO usar IsServerRunning aquí: si el proceso murió de forma inesperada,
+  // IsServerRunning=False pero FReadThread y FInteractiveProcess siguen asignados
+  // (estado zombie). En ese caso debemos limpiarlos igualmente.
+  if not FIsRunning and not Assigned(FReadThread) and not Assigned(FInteractiveProcess) then
     Exit;
 
+  {$IFDEF DEBUG} MCPLog('InternalStopServerProcess BEGIN name=' + Self.Name + ' FIsRunning=' + BoolToStr(FIsRunning, True)); {$ENDIF}
   DoLog('Stopping MCP server process...');
   DoStatusUpdate('Stopping server...');
   try
     FIsRunning := False;
-    if Assigned(FReadThread) then
-    begin
-      FReadThread.WaitFor;
-      FreeAndNil(FReadThread);
-    end;
 
+    // CRÍTICO: secuencia correcta para evitar AV por race condition.
+    // El read thread puede estar dentro de FInteractiveProcess.ReadOutput() justo
+    // cuando liberamos el objeto → AV. La secuencia segura es:
+    //   1. Matar el proceso SIN liberar el objeto → cierra el pipe → ReadOutput
+    //      retorna 0 bytes → el thread sale de su bucle.
+    //   2. WaitFor → esperar que el thread termine antes de liberar nada.
+    //   3. Liberar FInteractiveProcess → ya nadie lo usa.
     if Assigned(FInteractiveProcess) then
     begin
+      {$IFDEF DEBUG} MCPLog('  Terminate process...'); {$ENDIF}
+      FInteractiveProcess.Terminate;  // mata el proceso; el objeto sigue vivo
+      {$IFDEF DEBUG} MCPLog('  Terminate OK'); {$ENDIF}
+    end;
+
+    if Assigned(FReadThread) then
+    begin
+      {$IFDEF DEBUG} MCPLog('  WaitFor thread...'); {$ENDIF}
+      FReadThread.WaitFor;           // thread ya salió (pipe cerrado + FIsRunning=False)
+      FreeAndNil(FReadThread);
+      {$IFDEF DEBUG} MCPLog('  Thread freed'); {$ENDIF}
+    end;
+
+    // Ahora sí es seguro liberar el objeto del proceso
+    if Assigned(FInteractiveProcess) then
+    begin
+      {$IFDEF DEBUG} MCPLog('  Free FInteractiveProcess...'); {$ENDIF}
       TUtilsSystem.StopInteractiveProcess(FInteractiveProcess);
-      FInteractiveProcess := nil;
+      {$IFDEF DEBUG} MCPLog('  FInteractiveProcess freed'); {$ENDIF}
     end;
 
     DoLog('MCP Server stopped.');
@@ -989,9 +1123,6 @@ begin
     FreeAndNil(AArguments);
     Exit;
   end;
-  if not Assigned(AArguments) then
-    AArguments := TJSONObject.Create;
-
   Inc(FRequestIDCounter);
   RequestObj := TJSONObject.Create;
   try
@@ -1003,12 +1134,22 @@ begin
     LParams := TJSONObject.Create;
     RequestObj.AddPair('params', LParams);
     LParams.AddPair('name', TJSONString.Create(AToolName));
-    LParams.AddPair('arguments', AArguments); // AArguments es ahora propiedad de LParams
+    // Clonar AArguments: el caller sigue siendo owner del original
+    if Assigned(AArguments) then
+      LParams.AddPair('arguments', AArguments.Clone as TJSONValue)
+    else
+      LParams.AddPair('arguments', TJSONObject.Create);
 
     DoLog(Format('Calling tool "%s"...', [AToolName]));
     InternalSendRawMessage(RequestObj.ToJSON);
 
-    Response := InternalReceiveJSONResponse(FRequestIDCounter);
+    // Usar timeout generoso para tool calls: operaciones de red (SMTP, HTTP, SSH)
+    // pueden tardar mucho más que el handshake de inicialización.
+    // Mínimo 60s; si el parámetro Timeout está configurado más alto, usarlo.
+    var LCallTimeout := StrToIntDef(GetParamByName('Timeout'), 60000);
+    if LCallTimeout < 60000 then LCallTimeout := 60000;
+    DoLog(Format('Waiting for tool response (timeout=%dms)...', [LCallTimeout]));
+    Response := InternalReceiveJSONResponse(FRequestIDCounter, Cardinal(LCallTimeout));
 
     if Assigned(Response) then
       try
@@ -1023,7 +1164,12 @@ begin
           var
             LError: TJSONObject;
           if (Response is TJSONObject) and TJSONObject(Response).TryGetValue<TJSONObject>('error', LError) then
-            DoLog(Format('Server error calling "%s": %s', [AToolName, LError.ToJSON]))
+          begin
+            DoLog(Format('Server error calling "%s": %s', [AToolName, LError.ToJSON]));
+            // Devolver el error como resultado para que el LLM pueda informar al usuario
+            Result := TJSONObject.Create;
+            Result.AddPair('error', LError.ToString);
+          end
           else
             DoLog(Format('Invalid server response for "%s": %s', [AToolName, Response.ToJSON]));
         end;

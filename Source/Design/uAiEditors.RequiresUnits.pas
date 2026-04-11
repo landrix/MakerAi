@@ -1,4 +1,4 @@
-// IT License
+﻿// IT License
 //
 // Copyright (c) <year> <copyright holders>
 //
@@ -71,6 +71,14 @@ uses
   uMakerAi.Chat.Messages,
   uMakerAi.Embeddings,
   uMakerAi.Embeddings.core,
+
+  // --- Embedding drivers ---
+  uMakerAi.Embeddings.OpenAi,
+  uMakerAi.Embeddings.Gemini,
+  uMakerAi.Embeddings.Ollama,
+  uMakerAi.Embeddings.Mistral,
+  uMakerAi.Embeddings.Cohere,
+  uMakerAi.Embeddings.LMStudio,
 
   // --- Tools ---
   uMakerAi.Tools.Functions,

@@ -1,4 +1,4 @@
-// IT License
+﻿// IT License
 //
 // Copyright (c) <year> <copyright holders>
 //
@@ -253,6 +253,14 @@ type
     procedure SetMsgError(const Value: String);
   protected
     procedure DoExecute(aBeforeNode: TAIAgentsNode; aLink: TAIAgentsLink); virtual;
+    // Realiza el enrutamiento al siguiente link tras la ejecucion del nodo.
+    // Subclases que sobreescriben DoExecute deben llamar a este metodo al final.
+    procedure DoTraverseLinks(aBeforeNode: TAIAgentsNode; aLink: TAIAgentsLink);
+    // Evalua la logica de join (jmAny / jmAll) y actualiza Self.Input.
+    // Retorna True si el nodo debe ejecutarse ahora, False si debe esperar.
+    // Subclases que sobreescriben DoExecute completamente DEBEN llamar esto
+    // al inicio y salir si retorna False.
+    function CheckJoinAndPrepareInput(aBeforeNode: TAIAgentsNode; aLink: TAIAgentsLink): Boolean;
     procedure Reset;
   public
     constructor Create(aOwner: TComponent); override;
@@ -1005,16 +1013,36 @@ end;
 procedure TAIAgentManager.DoError(Node: TAIAgentsNode; Link: TAIAgentsLink; E: Exception);
 var
   LAbort: Boolean;
+  ErrorMsg: String;
+  AggE: EAggregateException;
+  I: Integer;
 begin
-  // CAMBIO: Usar SetStatus con Enum
+  // Extraer el mensaje real: si es EAggregateException (rama paralela fallida),
+  // exponer los mensajes de los errores internos en lugar de "One or more occurred".
+  if (E is EAggregateException) then
+  begin
+    AggE := EAggregateException(E);
+    if AggE.Count > 0 then
+    begin
+      ErrorMsg := '';
+      for I := 0 to AggE.Count - 1 do
+      begin
+        if I > 0 then ErrorMsg := ErrorMsg + ' | ';
+        ErrorMsg := ErrorMsg + AggE.InnerExceptions[I].Message;
+      end;
+    end
+    else
+      ErrorMsg := E.Message;
+  end
+  else
+    ErrorMsg := E.Message;
+
   Blackboard.SetStatus(esError);
-  Blackboard.SetString('Execution.ErrorMessage', E.Message);
+  Blackboard.SetString('Execution.ErrorMessage', ErrorMsg);
 
   LAbort := True;
   if Assigned(FOnError) then
-  begin
     FOnError(Self, Node, Link, E, LAbort);
-  end;
 
   if LAbort then
     Abort;
@@ -2997,10 +3025,11 @@ begin
     Exit;
 
   try
-    // Limpiar estado de suspensi?n al inicio de cada ejecuci?n
+    // Limpiar estado al inicio de cada ejecuci?n
     FSuspended      := False;
     FSuspendReason  := '';
     FSuspendContext := '';
+    FOutput         := '';   // reset para soportar ejecuciones m?ltiples del mismo nodo
 
     if Assigned(FOnExecute) then
       FOnExecute(Self, aBeforeNode, aLink, Self.Input, FOutput)
@@ -3010,30 +3039,7 @@ begin
     if FOutput = '' then
       FOutput := Input;
 
-    // Verificar suspensi?n antes de enrutar al siguiente link
-    if FSuspended then
-    begin
-      if Assigned(FGraph) then
-        FGraph.DoNodeSuspended(Self, aBeforeNode, aLink);
-      Exit; // No llamar OnExitNode, no enrutar al siguiente Link
-    end;
-
-    if Assigned(FGraph.OnExitNode) then
-      TThread.Synchronize(nil,
-        procedure
-        begin
-          FGraph.OnExitNode(FGraph, Self);
-        end);
-
-    if Assigned(Next) then
-    begin
-      Next.FSourceNode := Self;
-      Next.DoExecute(Self);
-    end;
-
-    // Checkpoint tras nodo exitoso
-    if Assigned(FGraph) then
-      FGraph.DoNodeCompleted(Self);
+    DoTraverseLinks(aBeforeNode, aLink);
   finally
     // --- LIMPIEZA DE ESTADO ---
     if CanExecute and (FInEdges.Count > 1) then
@@ -3058,6 +3064,91 @@ begin
       end;
     end;
   end;
+end;
+
+function TAIAgentsNode.CheckJoinAndPrepareInput(aBeforeNode: TAIAgentsNode;
+  aLink: TAIAgentsLink): Boolean;
+var
+  sb: TStringBuilder;
+begin
+  Result := False;
+
+  // Caso especial: reanudacion desde ResumeThread (aBeforeNode=nil, aLink=nil)
+  // con nodo join (FInEdges.Count > 1). Saltamos la puerta de join.
+  if (aBeforeNode = nil) and (aLink = nil) and (FInEdges.Count > 1) then
+  begin
+    Result := True;
+    Exit; // FInput ya fue seteado por ResumeThread
+  end;
+
+  if FInEdges.Count > 1 then
+  begin
+    FJoinLock.Enter;
+    try
+      if (aBeforeNode <> nil) and (aLink <> nil) then
+        FJoinInputs.AddOrSetValue(aLink, aBeforeNode.Output);
+
+      case FJoinMode of
+        jmAny:
+          begin
+            Result := True;
+            if aBeforeNode <> nil then
+              Input := aBeforeNode.Output;
+          end;
+        jmAll:
+          begin
+            if FJoinInputs.Count >= FInEdges.Count then
+            begin
+              Result := True;
+              sb := TStringBuilder.Create;
+              try
+                for var Value in FJoinInputs.Values do
+                  sb.AppendLine(Value);
+                Input := sb.ToString;
+              finally
+                sb.Free;
+              end;
+            end;
+          end;
+      end;
+    finally
+      FJoinLock.Leave;
+    end;
+  end
+  else
+  begin
+    Result := True;
+    if aBeforeNode <> nil then
+      Input := aBeforeNode.Output;
+  end;
+end;
+
+procedure TAIAgentsNode.DoTraverseLinks(aBeforeNode: TAIAgentsNode; aLink: TAIAgentsLink);
+begin
+  // Verificar suspension antes de enrutar al siguiente link
+  if FSuspended then
+  begin
+    if Assigned(FGraph) then
+      FGraph.DoNodeSuspended(Self, aBeforeNode, aLink);
+    Exit; // No llamar OnExitNode, no enrutar al siguiente Link
+  end;
+
+  if Assigned(FGraph) and Assigned(FGraph.OnExitNode) then
+    TThread.Synchronize(nil,
+      procedure
+      begin
+        FGraph.OnExitNode(FGraph, Self);
+      end);
+
+  if Assigned(Next) then
+  begin
+    Next.FSourceNode := Self;
+    Next.DoExecute(Self);
+  end;
+
+  // Checkpoint tras nodo exitoso
+  if Assigned(FGraph) then
+    FGraph.DoNodeCompleted(Self);
 end;
 
 procedure TAIAgentsNode.ForceFinalExecute;

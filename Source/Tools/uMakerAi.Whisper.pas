@@ -1,4 +1,4 @@
-// IT License
+ï»¿// IT License
 //
 // Copyright (c) <year> <copyright holders>
 //
@@ -220,7 +220,7 @@ procedure TAIWhisper.ExecuteTranscription(aMediaFile: TAiMediaFile; ResMsg, AskM
       ReportDataEnd(ResMsg, 'assistant', LText);
     except
       on E: Exception do
-        ReportError('Error en transcripción Whisper: ' + E.Message, E);
+        ReportError('Error en transcripciï¿½n Whisper: ' + E.Message, E);
     end;
   end;
 
@@ -241,7 +241,7 @@ begin
           ReportDataEnd(ResMsg, 'assistant', LText);
         except
           on E: Exception do
-            ReportError('Error en transcripción Whisper: ' + E.Message, E);
+            ReportError('Error en transcripciï¿½n Whisper: ' + E.Message, E);
         end;
       end
     );

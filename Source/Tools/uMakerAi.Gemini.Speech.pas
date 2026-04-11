@@ -1,4 +1,4 @@
-// Pendiente [TODO] //Estimar el costo de la generaci?n ya que no retorna el consumo
+﻿// Pendiente [TODO] //Estimar el costo de la generaci?n ya que no retorna el consumo
 // https://ai.google.dev/gemini-api/docs/pricing
 
 unit uMakerAi.Gemini.Speech;
@@ -381,58 +381,33 @@ begin
 end;
 
 procedure TAiGeminiSpeechTool.ExecuteTranscription(aMediaFile: TAiMediaFile; ResMsg, AskMsg: TAiChatMessage);
-
-  procedure DoTranscription;
-  var
-    LText: string;
-  begin
-    try
-      ReportState(acsReasoning, 'Transcribiendo audio con Gemini...');
-      LText := InternalRunGeminiTranscription(aMediaFile);
-      aMediaFile.Transcription := LText;
-      aMediaFile.Procesado := True;
-      ReportDataEnd(ResMsg, 'assistant', LText);
-    except
-      on E: Exception do
-        ReportError('Error en transcripcion Gemini: ' + E.Message, E);
-    end;
-  end;
-
+var
+  LText: string;
 begin
-  if IsAsync then
-    DoTranscription
-  else
-    TTask.Run(
-      procedure
-      var
-        LText: string;
-      begin
-        try
-          ReportState(acsReasoning, 'Transcribiendo audio con Gemini...');
-          LText := InternalRunGeminiTranscription(aMediaFile);
-          aMediaFile.Transcription := LText;
-          aMediaFile.Procesado := True;
-          ReportDataEnd(ResMsg, 'assistant', LText);
-        except
-          on E: Exception do
-            ReportError('Error en transcripcion Gemini: ' + E.Message, E);
-        end;
-      end);
+  // Llamada directa siempre — nunca TTask.Run aquí:
+  // - IsAsync=True:  ya estamos en hilo background del chat → sin problema.
+  // - IsAsync=False: modo sync → bloquear es correcto (igual que la llamada HTTP al LLM).
+  //   Con TTask.Run en sync mode, el caller leía ResMsg.Prompt vacío y aMediaFile
+  //   podía liberarse antes de que el TTask terminara → access violation.
+  try
+    ReportState(acsReasoning, 'Transcribiendo audio con Gemini...');
+    LText := InternalRunGeminiTranscription(aMediaFile);
+    aMediaFile.Transcription := LText;
+    aMediaFile.Procesado := True;
+    ResMsg.Prompt := LText;  // asignación directa para que InternalRunTranscription lo lea en sync
+    ReportDataEnd(ResMsg, 'assistant', LText);
+  except
+    on E: Exception do
+      ReportError('Error en transcripcion Gemini: ' + E.Message, E);
+  end;
 end;
 
 procedure TAiGeminiSpeechTool.ExecuteSpeechGeneration(const AText: string; ResMsg, AskMsg: TAiChatMessage);
 begin
-  // Si IsAsync=True ya estamos en un hilo background del chat: llamar directo
-  // para evitar un TTask anidado que causaría dangling pointer sobre ResMsg.
-  // Si IsAsync=False estamos en el hilo principal: lanzar task para no bloquearlo.
-  if IsAsync then
-    InternalRunGeminiTTS(AText, ResMsg)
-  else
-    TTask.Run(
-      procedure
-      begin
-        InternalRunGeminiTTS(AText, ResMsg);
-      end);
+  // Llamada directa siempre — mismo razonamiento que ExecuteTranscription:
+  // InternalRunGeminiTTS asigna ResMsg.Prompt y ResMsg.MediaFiles directamente,
+  // por lo que el caller debe esperar a que termine para leer el resultado.
+  InternalRunGeminiTTS(AText, ResMsg);
 end;
 
 function TAiGeminiSpeechTool.GetApiKey: string;

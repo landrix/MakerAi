@@ -157,9 +157,7 @@ curl -X POST http://localhost:8080/mcp \
 - `ThinkingLevel` — nivel de razonamiento (`tlLow`, `tlMedium`, `tlHigh`)
 - `Tool_Active` — habilita function calling
 
-Sistema legacy aún soportado (traducción automática vía `EnsureNewSystemConfig`):
-- `NativeInputFiles` / `NativeOutputFiles` — tipos de archivo físico
-- `ChatMediaSupports` / `EnabledFeatures` — capacidades lógicas legacy
+**API eliminada (no usar en `RegisterUserParam`):** `NativeInputFiles`, `NativeOutputFiles`, `ChatMediaSupports`, `EnabledFeatures` fueron eliminados de la API pública. Existen internamente en el engine (calculados automáticamente desde `ModelCaps`/`SessionCaps` vía `SetModelCaps`/`EnsureNewSystemConfig`), pero NO deben usarse directamente.
 
 ### Agent Graph Execution Model
 

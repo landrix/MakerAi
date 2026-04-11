@@ -1,4 +1,4 @@
-unit uMakerAi.Ollama.Ocr;
+ï»¿unit uMakerAi.Ollama.Ocr;
 
 interface
 
@@ -81,14 +81,14 @@ procedure TAiOllamaOcrTool.ExecuteImageDescription(aMediaFile: TAiMediaFile; Res
 var
   LPrompt: string;
 begin
-  // Capturar el prompt antes de cualquier operación async para evitar
+  // Capturar el prompt antes de cualquier operaciï¿½n async para evitar
   // acceder a AskMsg cuando pueda estar liberado dentro del TTask.
   LPrompt := '';
   if Assigned(AskMsg) then
     LPrompt := AskMsg.Prompt;
 
   // Si IsAsync=True ya estamos en el hilo background del chat: ejecutar directo
-  // para evitar un TTask anidado que causaría dangling pointer sobre ResMsg/AskMsg.
+  // para evitar un TTask anidado que causarï¿½a dangling pointer sobre ResMsg/AskMsg.
   // Si IsAsync=False estamos en el hilo principal: lanzar task para no bloquearlo.
   if IsAsync then
     InternalRunOllamaOCR(aMediaFile, ResMsg, LPrompt)

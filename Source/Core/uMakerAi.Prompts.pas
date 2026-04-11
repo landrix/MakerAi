@@ -1,4 +1,4 @@
-// MIT License
+﻿// MIT License
 //
 // Copyright (c) <year> <copyright holders>
 //
@@ -55,6 +55,7 @@ type
     function GetDisplayName: string; Override;
   Public
     constructor Create(Collection: TCollection); Override;
+    destructor Destroy; Override;
   Published
     Property Nombre: String read fNombre Write fNombre;
     Property Descripcion: String read fDescripcion Write fDescripcion;
@@ -71,8 +72,11 @@ type
   protected
   public
     Constructor Create(aOwner: TComponent); Override;
+    Destructor Destroy; Override;
     Function IndexOf(Nombre: String): Integer;
+    Function GetNombre(Index: Integer): String;
     Function GetString(Nombre: String): String;
+    Function GetStringByIndex(Index: Integer): String;
     Function AddString(Nombre, Data: String): TAiPromptItem;
     Function GetTemplate(Nombre: String; Params: Array of String): String; Overload;
     Function GetTemplate(Nombre: String; Params: TStringList): String; Overload;
@@ -225,6 +229,32 @@ Begin
   Item.Nombre := Nombre;
   Item.Strings.Text := Data;
   Result := Item;
+End;
+
+destructor TAiPromptItem.Destroy;
+Begin
+  FString.Free;
+  Inherited;
+End;
+
+Destructor TAiPrompts.Destroy;
+Begin
+  FItems.Free;
+  Inherited;
+End;
+
+Function TAiPrompts.GetNombre(Index: Integer): String;
+Begin
+  Result := '';
+  If (Index >= 0) and (Index < FItems.Count) then
+    Result := TAiPromptItem(FItems.Items[Index]).Nombre;
+End;
+
+Function TAiPrompts.GetStringByIndex(Index: Integer): String;
+Begin
+  Result := '';
+  If (Index >= 0) and (Index < FItems.Count) then
+    Result := TAiPromptItem(FItems.Items[Index]).Strings.Text;
 End;
 
 // ---------------------------------------------------------------------------

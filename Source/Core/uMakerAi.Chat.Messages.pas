@@ -1,4 +1,4 @@
-// MIT License
+﻿// MIT License
 //
 // Copyright (c) <year> <copyright holders>
 //
@@ -53,24 +53,32 @@ Type
 
   // Clase que maneja las funciones de los tools
   TAiToolsFunction = class(TObject)
+  private
+    FParams: TStringList;
+    FParamsCachedArgs: string;
+    function GetParams: TStringList;
+  public
     id: string;
-    Tipo: string;
+    &Type: string;
     name: string;
     Description: String; // Descripci?n de la funci?n
-    Arguments: string; // Si tiene par?metros en forma de json se utiliza este
-    Params: TStringList; // Si tiene par?metros en forma de name=value se utiliza este si arguments = ''
-    &Function: string; // Nombre de la funci?n
-    Response: String; // String que responde la funci?n al LLM
-    Body: TJSONObject; // El body en json que retorna la funci?n, se utiliza para depuraci?n o para obtener informaci?n adicional
+    Arguments: string; // Par?metros en formato JSON (can?nico). Siempre usar este campo.
+    &Function: string; // Definici?n completa serializada de la funci?n (JFunc.Format)
+    Response: String; // Respuesta al LLM: texto plano o JSON string, ambos son v?lidos
     Metadata: TAiMetadata; // Metadatos adicionales que se pueden enviar a la funci?n
     AskMsg: TAiChatMessage; // TAiChatMessage que representa la pregunta
     ResMsg: TAiChatMessage; // TAiChatMessage que representa la respuesta
+    MediaFiles: TAiMediaFiles; // Archivos extraídos por el tool (ej: imágenes devueltas por MCP)
 
     Constructor Create;
     Destructor Destroy; Override;
     Procedure ParseFunction(JObj: TJSONObject); // Esta funci?n se reemplazar? por estas dos seg?n la necesidad
 
     Procedure Assign(aSource: TAiToolsFunction);
+
+    // Params: acceso f?cil a los argumentos del tool call como Name=Value.
+    // Se parsea desde Arguments (JSON) de forma lazy. Ejemplo: ToolCall.Params.Values['PDFFileName']
+    property Params: TStringList read GetParams;
   end;
 
   TAiToolsFunctions = Class(TDictionary<String, TAiToolsFunction>)
@@ -182,10 +190,9 @@ Type
 
   TAiChatMessages = Class(TList<TAiChatMessage>) // futura actualizaci?n cambiar tlist por TObjectList
   Private
-    FNativeInputFiles: TAiFileCategories;
+    FModelCaps: TAiCapabilities;
     function GetAsText: String;
     procedure SetAsText(const Value: String);
-    procedure SetNativeInputFiles(const Value: TAiFileCategories);
   Protected
   Public
     Function ToJSon: TJSonArray;
@@ -196,7 +203,7 @@ Type
     Procedure LoadFromStream(Stream: TStream);
     Procedure LoadFromFile(FileName: String);
     Property AsText: String Read GetAsText Write SetAsText;
-    Property NativeInputFiles: TAiFileCategories read FNativeInputFiles write SetNativeInputFiles;
+    Property ModelCaps: TAiCapabilities read FModelCaps write FModelCaps;
   End;
 
   // Clase base para cualquier tipo de fuente de datos.
@@ -905,11 +912,6 @@ begin
   End;
 end;
 
-procedure TAiChatMessages.SetNativeInputFiles(const Value: TAiFileCategories);
-begin
-  FNativeInputFiles := Value;
-end;
-
 function TAiChatMessages.ToJSon: TJSonArray;
 Var
   I, J: Integer;
@@ -936,10 +938,13 @@ begin
     If Msg.FFunctionName <> '' then
       JObj.AddPair('name', Msg.FFunctionName);
 
-    // de todos los archivos de medios selecciona las im?genes que es lo que podemos manejar por ahora
-    // y las im?genes que no han sigo preprocesadas, por si el modelo no maneja imagenes, previamente
-    // se deben haber procesado en en el momento de adicionar el mensaje al chat
-    MediaArr := Msg.MediaFiles.GetMediaList(FNativeInputFiles, False);
+    // Filtra los archivos que el modelo acepta nativamente (derivado de FModelCaps)
+    var LNativeTypes: TAiFileCategories := [Tfc_Text];
+    if cap_Image in FModelCaps then Include(LNativeTypes, Tfc_Image);
+    if cap_Audio in FModelCaps then Include(LNativeTypes, Tfc_Audio);
+    if cap_Video in FModelCaps then Include(LNativeTypes, Tfc_Video);
+    if cap_Pdf   in FModelCaps then Include(LNativeTypes, Tfc_Pdf);
+    MediaArr := Msg.MediaFiles.GetMediaList(LNativeTypes, False);
 
     If (Length(MediaArr) > 0) then
     Begin
@@ -1222,13 +1227,12 @@ end;
 procedure TAiToolsFunction.Assign(aSource: TAiToolsFunction);
 begin
   Self.id := aSource.id;
-  Self.Tipo := aSource.Tipo;
+  Self.&Type := aSource.&Type;
   Self.name := aSource.name;
   Self.Description := aSource.Description;
   Self.Arguments := aSource.Arguments;
   Self.&Function := aSource.&Function;
   Self.Response := aSource.Response;
-  Self.Body := aSource.Body;
   Metadata.JsonText := aSource.Metadata.JsonText;
 end;
 
@@ -1236,15 +1240,46 @@ constructor TAiToolsFunction.Create;
 begin
   inherited;
   Metadata := TAiMetadata.Create;
-  Params := TStringList.Create;
-
+  MediaFiles := TAiMediaFiles.Create;
 end;
 
 destructor TAiToolsFunction.Destroy;
 begin
   Metadata.Free;
-  Params.Free;
+  MediaFiles.Free;
+  FParams.Free;
   inherited;
+end;
+
+function TAiToolsFunction.GetParams: TStringList;
+var
+  JObj: TJSONValue;
+  JPair: TJSONPair;
+begin
+  if (FParams = nil) or (FParamsCachedArgs <> Arguments) then
+  begin
+    if FParams = nil then
+      FParams := TStringList.Create;
+    FParams.Clear;
+    FParamsCachedArgs := Arguments;
+    if Arguments <> '' then
+    begin
+      JObj := TJSONObject.ParseJSONValue(Arguments);
+      if JObj is TJSONObject then
+      try
+        for JPair in TJSONObject(JObj) do
+        begin
+          if JPair.JsonValue is TJSONString then
+            FParams.Values[JPair.JsonString.Value] := JPair.JsonValue.Value
+          else
+            FParams.Values[JPair.JsonString.Value] := JPair.JsonValue.ToString;
+        end;
+      finally
+        JObj.Free;
+      end;
+    end;
+  end;
+  Result := FParams;
 end;
 
 procedure TAiToolsFunction.ParseFunction(JObj: TJSONObject);
@@ -1256,7 +1291,6 @@ begin
   Name := JFunc.GetValue<String>('name');
   Self.Description := JFunc.GetValue<String>('description');
   &Function := JFunc.Format;
-  Body := JObj; // La funcion original completa
 end;
 
 { TAitools_outputs }
@@ -1305,10 +1339,9 @@ begin
   For Clave in Self.Keys do
   Begin
     Func := Self.Items[Clave];
-    // Result.Add(TJSonObject(TJSonObject.ParseJSONValue(Self.Items[Clave].&Function)));
-    TObj := TJSONObject(Func.Body.Clone);
-    // TObj.AddPair('type', 'function');
-    // TObj.AddPair('function', TJsonObject(Func.Body.Clone));
+    TObj := TJSONObject.Create;
+    TObj.AddPair('type', 'function');
+    TObj.AddPair('function', TJSONObject(TJSONObject.ParseJSONValue(Func.&Function)));
     Result.Add(TObj);
   End;
 end;

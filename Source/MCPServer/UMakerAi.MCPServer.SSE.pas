@@ -1,4 +1,4 @@
-// MIT License
+ï»¿// MIT License
 //
 // Copyright (c) <year> <copyright holders>
 //
@@ -66,7 +66,7 @@ type
     procedure OnCommandGet(AContext: TIdContext; ARequestInfo: TIdHTTPRequestInfo; AResponseInfo: TIdHTTPResponseInfo);
     procedure OnCommandOther(AContext: TIdContext; ARequestInfo: TIdHTTPRequestInfo; AResponseInfo: TIdHTTPResponseInfo);
 
-    // Manejadores específicos
+    // Manejadores especï¿½ficos
     procedure HandleSSEConnection(AContext: TIdContext; AResponseInfo: TIdHTTPResponseInfo);
     procedure HandlePostMessage(AContext: TIdContext; ARequestInfo: TIdHTTPRequestInfo; AResponseInfo: TIdHTTPResponseInfo; const AAuthContext: TAiAuthContext);
 
@@ -221,7 +221,7 @@ var
 begin
   VerifyAndSetCORSHeaders(AResponseInfo);
 
-  // Autenticación en la conexión SSE
+  // Autenticaciï¿½n en la conexiï¿½n SSE
   AuthHeader := ARequestInfo.RawHeaders.Values['Authorization'];
   if AuthHeader = '' then
     AuthHeader := ARequestInfo.RawHeaders.Values['X-API-Key'];
@@ -260,7 +260,7 @@ begin
     Exit;
   end;
 
-  // Autenticación en cada POST
+  // Autenticaciï¿½n en cada POST
   AuthHeader := ARequestInfo.RawHeaders.Values['Authorization'];
   if AuthHeader = '' then
     AuthHeader := ARequestInfo.RawHeaders.Values['X-API-Key'];
@@ -442,7 +442,7 @@ begin
 
   // 4. Ejecutar L?gica (Core)
   try
-    // ExecuteRequest devuelve el JSON de respuesta (con contexto de autenticación)
+    // ExecuteRequest devuelve el JSON de respuesta (con contexto de autenticaciï¿½n)
     ResponseJson := FLogicServer.ExecuteRequest(JsonBody, SessionID, AAuthContext);
 
     // 5. Enviar Respuesta por el CANAL SSE (No por HTTP response)

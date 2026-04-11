@@ -1,4 +1,4 @@
-// IT License
+﻿// IT License
 //
 // Copyright (c) <year> <copyright holders>
 //
@@ -47,8 +47,7 @@ uses
   uJSONHelper,
 {$ENDIF}
   uMakerAi.ParamsRegistry, uMakerAi.Chat, uMakerAi.Tools.Functions, uMakerAi.Core,
-  uMakerAi.Utils.PcmToWav, uMakerAi.Utils.CodeExtractor, uMakerAi.Embeddings,
-  uMakerAi.Embeddings.Core, uMakerAi.Tools.ComputerUse;
+  uMakerAi.Utils.PcmToWav, uMakerAi.Utils.CodeExtractor, uMakerAi.Tools.ComputerUse;
 
 type
 
@@ -84,14 +83,14 @@ type
   Protected
     Procedure OnInternalReceiveData(const Sender: TObject; AContentLength, AReadCount: Int64; var AAbort: Boolean); Override;
 
-    function InternalRunSpeechGeneration(ResMsg, AskMsg: TAiChatMessage): String; Override;
-    function InternalRunImageGeneration(ResMsg, AskMsg: TAiChatMessage): String; Override;
-    function InternalRunImageVideoGeneration(ResMsg, AskMsg: TAiChatMessage): String; Override;
+    function InternalRunNativeSpeechGeneration(ResMsg, AskMsg: TAiChatMessage): String; Override;
+    function InternalRunNativeImageGeneration(ResMsg, AskMsg: TAiChatMessage): String; Override;
+    function InternalRunNativeVideoGeneration(ResMsg, AskMsg: TAiChatMessage): String; Override;
 
     Function InternalRunCompletions(ResMsg, AskMsg: TAiChatMessage): String; Override;
 
-    function InternalRunTranscription(aMediaFile: TAiMediaFile; ResMsg, AskMsg: TAiChatMessage): String; Override;
-    function InternalRunImageDescription(aMediaFile: TAiMediaFile; ResMsg, AskMsg: TAiChatMessage): String; Override;
+    function InternalRunNativeTranscription(aMediaFile: TAiMediaFile; ResMsg, AskMsg: TAiChatMessage): String; Override;
+    function InternalRunNativeImageDescription(aMediaFile: TAiMediaFile; ResMsg, AskMsg: TAiChatMessage): String; Override;
 
     Function InternalAddMessage(aPrompt, aRole: String; aToolCallId: String = ''; aFunctionName: String = ''): TAiChatMessage; Override;
     Function InternalAddMessage(aPrompt, aRole: String; aMediaFiles: TAiMediaFilesArray): TAiChatMessage; Override;
@@ -139,17 +138,6 @@ type
     Property MediaResolution: TAiMediaResolution read FMediaResolution write SetMediaResolution;
   End;
 
-  TAiGeminiEmbeddings = class(TAiEmbeddings)
-  Public
-    Constructor Create(aOwner: TComponent); Override;
-    Destructor Destroy; Override;
-    Function CreateEmbedding(aInput, aUser: String; aDimensions: Integer = -1; aModel: String = ''; aEncodingFormat: String = 'float'): TAiEmbeddingData; Override;
-    Procedure ParseEmbedding(jObj: TJSONObject); Override;
-    class function GetDriverName: string; override;
-    class function CreateInstance(aOwner: TComponent): TAiEmbeddings; override;
-    class procedure RegisterDefaultParams(Params: TStrings); override;
-  end;
-
 procedure Register;
 
 implementation
@@ -160,7 +148,7 @@ Const
 
 procedure Register;
 begin
-  RegisterComponents('MakerAI', [TAiGeminiChat, TAiGeminiEmbeddings]);
+  RegisterComponents('MakerAI', [TAiGeminiChat]);
 end;
 
 { TAiGeminiChat }
@@ -267,11 +255,8 @@ begin
   Top_p := 0.95;
   Temperature := 1.0;
 
-  NativeOutputFiles := [];
-  ChatMediaSupports := [];
-
   FThinkingBudget := 0;
-  ThinkingLevel := tlDefault;
+  ModelConfig.ThinkingLevel := tlDefault;
   FIncludeThoughts := False;
 
   FThoughtSignatures := TObjectDictionary<TAiChatMessage, TStringList>.Create([doOwnsValues]);
@@ -432,14 +417,14 @@ var
   RawVal, SpeakerName, VoiceName: string;
 begin
   Result := nil;
-  if Trim(Voice) = '' then
+  if Trim(TtsParams.Voice) = '' then
     Exit;
 
   SL := TStringList.Create;
   try
     // 1. Separar por comas (esto suele funcionar bien para la lista principal)
     // Ej: "Sol=Kore, Gustavo=Puck"
-    SL.CommaText := Voice;
+    SL.CommaText := TtsParams.Voice;
 
     // Limpiar entradas vacías
     for I := SL.Count - 1 downto 0 do
@@ -667,11 +652,9 @@ begin
         jPartItem := TJSONObject.Create.AddPair('functionResponse', jFuncResponse);
         jParts.Add(jPartItem);
 
-        // [COMPUTER USE - IMÁGENES]
-        // (Tu código de adjuntar imágenes que hicimos antes va aquí, justo después)
-        MediaArr := Msg.MediaFiles.GetMediaList([Tfc_Image], False);
+        // Archivos adjuntos al tool result (ComputerUse screenshots + archivos MCP)
+        MediaArr := Msg.MediaFiles.GetMediaList([Tfc_Image, Tfc_pdf], False);
         if Length(MediaArr) > 0 then
-          if Length(MediaArr) > 0 then
           begin
             for MediaFile in MediaArr do
             begin
@@ -794,10 +777,10 @@ begin
           Var
             TargetCategories: TAiFileCategories;
 
-          if (Tcm_CodeInterpreter in ChatMediaSupports) then
+          if (cap_CodeInterpreter in ModelConfig.ModelCaps) then
             TargetCategories := [Low(TAiFileCategory) .. High(TAiFileCategory)] // Permitir todo
           else
-            TargetCategories := NativeInputFiles; // Filtro estricto estándar
+            TargetCategories := GetModelInputFileTypes; // Filtro basado en ModelCaps
 
           MediaArr := Msg.MediaFiles.GetMediaList(TargetCategories, False);
 
@@ -1068,7 +1051,7 @@ begin
     // B. Code Execution (Solo si está explícitamente en el Set)
     // Nota: codeExecution es incompatible con response_mime_type=application/json
     // Nota: codeExecution no se puede combinar con function declarations de usuario
-    if (Tcm_CodeInterpreter in ChatMediaSupports) and
+    if (cap_CodeInterpreter in ModelConfig.ModelCaps) and
        not (Response_format in [tiaChatRfJson, tiaChatRfJsonSchema]) and
        not LHasUserFunctions then
     begin
@@ -1080,7 +1063,7 @@ begin
     // C. Google Search (Solo si está explícitamente en el Set)
     // Nota: googleSearch es incompatible con response_mime_type=application/json
     // Nota: googleSearch no se puede combinar con function declarations de usuario
-    if (tcm_WebSearch in ChatMediaSupports) and
+    if (cap_WebSearch in ModelConfig.ModelCaps) and
        not (Response_format in [tiaChatRfJson, tiaChatRfJsonSchema]) and
        not LHasUserFunctions then
     begin
@@ -1090,7 +1073,7 @@ begin
     end;
 
     // D. Computer Use
-    if (tcm_ComputerUse in ChatMediaSupports) then
+    if (cap_ComputerUse in ModelConfig.ModelCaps) then
     Begin
       // En Gemini 2.5, Computer Use es una herramienta de primer nivel,
       // al igual que 'googleSearch' o 'codeExecution'.
@@ -1149,16 +1132,16 @@ begin
     end;
 
     // B. Configuración de Imagen (Gemini 3 Image / Imagen 3)
-    if ImageParams.Count > 0 then
+    if ImageParams.Params.Count > 0 then
     begin
       var
       JImageConfig := TJSONObject.Create;
-      if ImageParams.Values['aspectRatio'] <> '' then
-        JImageConfig.AddPair('aspectRatio', ImageParams.Values['aspectRatio']);
-      if ImageParams.Values['imageSize'] <> '' then
-        JImageConfig.AddPair('imageSize', ImageParams.Values['imageSize']);
-      if ImageParams.Values['personGeneration'] <> '' then
-        JImageConfig.AddPair('personGeneration', ImageParams.Values['personGeneration']);
+      if ImageParams.Params.Values['aspectRatio'] <> '' then
+        JImageConfig.AddPair('aspectRatio', ImageParams.Params.Values['aspectRatio']);
+      if ImageParams.Params.Values['imageSize'] <> '' then
+        JImageConfig.AddPair('imageSize', ImageParams.Params.Values['imageSize']);
+      if ImageParams.Params.Values['personGeneration'] <> '' then
+        JImageConfig.AddPair('personGeneration', ImageParams.Params.Values['personGeneration']);
 
       if JImageConfig.Count > 0 then
         JConfig.AddPair('imageConfig', JImageConfig)
@@ -1188,7 +1171,7 @@ begin
       JConfig.AddPair('responseMimeType', 'application/json');
     end;
 
-    if (ThinkingLevel <> tlDefault) or (FThinkingBudget > 0) then
+    if (ModelConfig.ThinkingLevel <> tlDefault) or (FThinkingBudget > 0) then
     begin
       var
       JThinking := TJSONObject.Create;
@@ -1198,7 +1181,7 @@ begin
       // Gemini 3: usar thinkingLevel string nativo (LOW/MEDIUM/HIGH)
       if LModelName.Contains('gemini-3') then
       begin
-        case ThinkingLevel of
+        case ModelConfig.ThinkingLevel of
           tlLow:    JThinking.AddPair('thinkingLevel', 'LOW');
           tlMedium: JThinking.AddPair('thinkingLevel', 'MEDIUM');
           tlHigh:   JThinking.AddPair('thinkingLevel', 'HIGH');
@@ -1217,7 +1200,7 @@ begin
         else if Max_tokens > 0 then
         begin
           // Mapeo proporcional si no se define presupuesto fijo
-          case ThinkingLevel of
+          case ModelConfig.ThinkingLevel of
             tlLow:
               LBudget := Trunc(Max_tokens * 0.25); // 25% del total
             tlMedium:
@@ -1533,7 +1516,7 @@ begin
   Self.Thinking_tokens := Self.Thinking_tokens + aThoughts_tokens;
 
   // Si se solicitó extracción de archivos de texto (native output)
-  If tfc_ExtracttextFile in NativeOutputFiles then
+  If cap_ExtractCode in ModelConfig.SessionCaps then
     InternalExtractCodeFiles(LRespuesta, ResMsg);
 
   // --- FUNCTION CALLING / TOOLS ---
@@ -1688,6 +1671,11 @@ begin
           TMonitor.Exit(FPendingScreenshots);
         end;
 
+        // Archivos devueltos por el tool MCP (imágenes, PDFs) → ToolMsg para que el LLM los vea
+        for var LMF in ToolCall.MediaFiles do
+          ToolMsg.AddMediaFile(LMF);
+        ToolCall.MediaFiles.OwnsObjects := False;
+
         ToolMsg.Id := FMessages.Count + 1;
         FMessages.Add(ToolMsg);
       End;
@@ -1812,15 +1800,8 @@ begin
           LFunction.Arguments := LArgsObject.ToJSON
         else
           LFunction.Arguments := '{}';
-        if Assigned(LArgsObject) then
-          For I := 0 to LArgsObject.Count - 1 do
-          Begin
-            Nom := LArgsObject.Pairs[I].JsonString.Value;
-            Valor := LArgsObject.Pairs[I].JsonValue.Value;
-            LFunction.Params.Values[Nom] := Valor;
-          End;
         LFunction.Id := 'call_' + TGuid.NewGuid.ToString;
-        LFunction.Tipo := 'function';
+        LFunction.&Type := 'function';
         Result.Add(LFunction.Id, LFunction);
       except
         LFunction.Free;
@@ -2023,7 +2004,7 @@ begin
   ResMsg.Id := FMessages.Count + 1;
   FMessages.Add(ResMsg);
 
-  If tfc_ExtracttextFile in NativeOutputFiles then
+  If cap_ExtractCode in ModelConfig.SessionCaps then
   Begin
     Code := TMarkdownCodeExtractor.Create;
     Try
@@ -2064,7 +2045,7 @@ var
   FileName: string;
 begin
   // Solo procesar si el usuario lo configuró en NativeOutputFiles
-  if not(tfc_ExtracttextFile in NativeOutputFiles) then
+  if not(cap_ExtractCode in ModelConfig.SessionCaps) then
     Exit;
 
   if AText.Trim.IsEmpty then
@@ -2233,7 +2214,7 @@ begin
 
   // 1. Verificar si ComputerUse está activo y tenemos el componente enlazado
 
-  if (tcm_ComputerUse in ChatMediaSupports) and Assigned(ComputerUseTool) then
+  if (cap_ComputerUse in ModelConfig.ModelCaps) and Assigned(ChatTools.ComputerUseTool) then
   begin
     // Lista de acciones conocidas de Gemini 2.5
     if MatchStr(LowerCase(ToolCall.Name), ['click_at', 'left_click', 'right_click', 'middle_click', 'double_click', 'type_text_at', 'type', 'key_combination', 'scroll_at', 'scroll_document', 'drag_and_drop', 'hover_at', 'mouse_move',
@@ -2252,7 +2233,7 @@ begin
 
     Screenshot := nil;
     try
-      ResponseJson := ComputerUseTool.ProcessToolCall(ToolCall, Screenshot);
+      ResponseJson := ChatTools.ComputerUseTool.ProcessToolCall(ToolCall, Screenshot);
 
       // Asignar la respuesta JSON
       ToolCall.Response := ResponseJson;
@@ -2271,7 +2252,7 @@ begin
     except
       on E: Exception do
       begin
-        ToolCall.Response := Format('{"error": "%s", "url": "%s"}', [E.Message, ComputerUseTool.CurrentUrl]);
+        ToolCall.Response := Format('{"error": "%s", "url": "%s"}', [E.Message, ChatTools.ComputerUseTool.CurrentUrl]);
         if Assigned(Screenshot) then
           Screenshot.Free;
       end;
@@ -2280,8 +2261,7 @@ begin
   else
   begin
     // 4. Si no es acción de computadora, usar el comportamiento estándar (AiFunctions o Evento)
-    ToolCall.Response := 'Command '+ToolCall.name+' not found';
-    //inherited DoCallFunction(ToolCall);
+    inherited DoCallFunction(ToolCall);
   end;
 end;
 
@@ -2383,7 +2363,7 @@ end;
 
 // --- VIDEO GENERATION (VEO) ---
 // Implementación basada en predictLongRunning y Polling
-function TAiGeminiChat.InternalRunImageVideoGeneration(ResMsg, AskMsg: TAiChatMessage): String;
+function TAiGeminiChat.InternalRunNativeVideoGeneration(ResMsg, AskMsg: TAiChatMessage): String;
 var
   LUrl, LModelName, LOpName, PollingUrl: string;
   LResponse: IHTTPResponse;
@@ -2455,14 +2435,14 @@ begin
     LParams := TJSONObject.Create;
 
     // Valores por defecto si no existen en VideoParams
-    if VideoParams.IndexOfName('aspectRatio') = -1 then
+    if VideoParams.Params.IndexOfName('aspectRatio') = -1 then
       LParams.AddPair('aspectRatio', '16:9'); // Default seguro
 
     // Iterar parámetros definidos por el usuario en el componente
-    for I := 0 to VideoParams.Count - 1 do
+    for I := 0 to VideoParams.Params.Count - 1 do
     begin
-      LKey := VideoParams.Names[I];
-      LValueStr := VideoParams.ValueFromIndex[I];
+      LKey := VideoParams.Params.Names[I];
+      LValueStr := VideoParams.Params.ValueFromIndex[I];
 
       var
         LNumInt: Integer;
@@ -2699,7 +2679,7 @@ begin
 end;
 
 // --- SPEECH GENERATION (TTS) ---
-function TAiGeminiChat.InternalRunSpeechGeneration(ResMsg, AskMsg: TAiChatMessage): String;
+function TAiGeminiChat.InternalRunNativeSpeechGeneration(ResMsg, AskMsg: TAiChatMessage): String;
 var
   LUrl, LModelName, LBodyStr: string;
   LBodyStream: TStringStream;
@@ -3010,18 +2990,18 @@ end;
 // Por ahora, InternalRunCompletions cubre Gemini 3 Image si se pasan los params correctos en CustomParams si fuese necesario,
 // pero aquí añadimos soporte básico si el modelo es gemini-3-pro-image-preview.
 
-function TAiGeminiChat.InternalRunImageGeneration(ResMsg, AskMsg: TAiChatMessage): String;
+function TAiGeminiChat.InternalRunNativeImageGeneration(ResMsg, AskMsg: TAiChatMessage): String;
 begin
   // Gemini 3 usa generateContent, igual que texto.
   Result := InternalRunCompletions(ResMsg, AskMsg);
 end;
 
-function TAiGeminiChat.InternalRunTranscription(aMediaFile: TAiMediaFile; ResMsg, AskMsg: TAiChatMessage): String;
+function TAiGeminiChat.InternalRunNativeTranscription(aMediaFile: TAiMediaFile; ResMsg, AskMsg: TAiChatMessage): String;
 begin
   Result := '';
 end;
 
-function TAiGeminiChat.InternalRunImageDescription(aMediaFile: TAiMediaFile; ResMsg, AskMsg: TAiChatMessage): String;
+function TAiGeminiChat.InternalRunNativeImageDescription(aMediaFile: TAiMediaFile; ResMsg, AskMsg: TAiChatMessage): String;
 begin
   Result := '';
 end;
@@ -3305,12 +3285,8 @@ begin
 
               LFunction.Arguments := LArgsStr;
 
-              if Assigned(jArgs) then
-                for var ArgIdx := 0 to jArgs.Count - 1 do
-                  LFunction.Params.Values[jArgs.Pairs[ArgIdx].JsonString.Value] := jArgs.Pairs[ArgIdx].JsonValue.Value;
-
               LFunction.Id := 'call_' + TGuid.NewGuid.ToString;
-              LFunction.Tipo := 'function';
+              LFunction.&Type := 'function';
               LFunciones.Add(LFunction.Id, LFunction);
             end;
 
@@ -3427,6 +3403,9 @@ begin
                       LocalFn := LocalFuncs[LocalKey];
                       var
                       ToolMsg := TAiChatMessage.Create(LocalFn.Response, 'tool', LocalFn.Id, LocalFn.Name);
+                      for var LMF in LocalFn.MediaFiles do
+                        ToolMsg.AddMediaFile(LMF);
+                      LocalFn.MediaFiles.OwnsObjects := False;
                       ToolMsg.Id := FMessages.Count + 1;
                       FMessages.Add(ToolMsg);
                     end;
@@ -3453,7 +3432,7 @@ begin
           ResMsg.Id := FMessages.Count + 1;
           FMessages.Add(ResMsg);
 
-          if tfc_ExtracttextFile in NativeOutputFiles then
+          if cap_ExtractCode in ModelConfig.SessionCaps then
             InternalExtractCodeFiles(FLastContent, ResMsg);
 
           DoStateChange(acsFinished, 'Done');
@@ -3493,116 +3472,8 @@ procedure TAiMediaFileGemini.DownloadFileFromUrl(Url: String);
 begin
 end;
 
-{ TAiGeminiEmbeddings }
-// [Embeddings se mantienen igual]
-
-constructor TAiGeminiEmbeddings.Create(aOwner: TComponent);
-begin
-  inherited;
-  ApiKey := '@GEMINI_API_KEY';
-  Url := GlAIUrl;
-  FDimensions := 768;
-  FModel := 'gemini-embedding-001';
-end;
-
-function TAiGeminiEmbeddings.CreateEmbedding(aInput, aUser: String; aDimensions: Integer; aModel, aEncodingFormat: String): TAiEmbeddingData;
-var
-  Client: THTTPClient;
-  jRequestRoot, jContent, jPart: TJSONObject;
-  jParts: TJSonArray;
-  jResponseRoot: TJSONObject;
-  Res: IHTTPResponse;
-  St: TStringStream;
-  sUrl: String;
-begin
-  Client := THTTPClient.Create;
-  jRequestRoot := TJSONObject.Create;
-  try
-    if aModel.IsEmpty then
-      aModel := FModel;
-    sUrl := FUrl + 'models/' + aModel + ':embedContent?key=' + FApiKey;
-    jPart := TJSONObject.Create;
-    jPart.AddPair('text', TJSONString.Create(aInput));
-    jParts := TJSonArray.Create;
-    jParts.AddElement(jPart);
-    jContent := TJSONObject.Create;
-    jContent.AddPair('parts', jParts);
-    jRequestRoot.AddPair('model', TJSONString.Create('models/' + aModel));
-    jRequestRoot.AddPair('content', jContent);
-    if aDimensions > 0 then
-      jRequestRoot.AddPair('outputDimensionality', TJSONNumber.Create(aDimensions));
-
-    St := TStringStream.Create(jRequestRoot.ToString, TEncoding.UTF8);
-    try
-      Client.ContentType := 'application/json';
-      Res := Client.Post(sUrl, St);
-    finally
-      St.Free;
-    end;
-
-    if Res.StatusCode = 200 then
-    begin
-      jResponseRoot := TJSONObject.ParseJSONValue(Res.ContentAsString) as TJSONObject;
-      try
-        ParseEmbedding(jResponseRoot);
-        Result := Self.FData;
-      finally
-        jResponseRoot.Free;
-      end;
-    end
-    else
-      Raise Exception.CreateFmt('Error Gemini Embeddings: %d - %s', [Res.StatusCode, Res.ContentAsString]);
-  finally
-    jRequestRoot.Free;
-    Client.Free;
-  end;
-end;
-
-procedure TAiGeminiEmbeddings.ParseEmbedding(jObj: TJSONObject);
-var
-  LEmbeddingObj: TJSONObject;
-  LValuesArray: TJSonArray;
-  Emb: TAiEmbeddingData;
-  I: Integer;
-begin
-  if not jObj.TryGetValue<TJSONObject>('embedding', LEmbeddingObj) then
-    Exit;
-  if not LEmbeddingObj.TryGetValue<TJSonArray>('values', LValuesArray) then
-    Exit;
-  SetLength(Emb, LValuesArray.Count);
-  for I := 0 to LValuesArray.Count - 1 do
-    Emb[I] := LValuesArray.Items[I].GetValue<Double>;
-  FData := Emb;
-end;
-
-destructor TAiGeminiEmbeddings.Destroy;
-begin
-  inherited;
-end;
-
-{ TAiGeminiEmbeddings - Factory class methods }
-
-class function TAiGeminiEmbeddings.GetDriverName: string;
-begin
-  Result := 'Gemini';
-end;
-
-class function TAiGeminiEmbeddings.CreateInstance(aOwner: TComponent): TAiEmbeddings;
-begin
-  Result := TAiGeminiEmbeddings.Create(aOwner);
-end;
-
-class procedure TAiGeminiEmbeddings.RegisterDefaultParams(Params: TStrings);
-begin
-  Params.Values['ApiKey'] := '@GEMINI_API_KEY';
-  Params.Values['Url'] := GlAIUrl;
-  Params.Values['Model'] := 'gemini-embedding-001';
-  Params.Values['Dimensions'] := '768';
-end;
-
 initialization
 
 TAiChatFactory.Instance.RegisterDriver(TAiGeminiChat);
-TAiEmbeddingFactory.Instance.RegisterDriver(TAiGeminiEmbeddings);
 
 end.

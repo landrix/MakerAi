@@ -240,7 +240,8 @@ acsIdle → acsConnecting → acsReasoning → acsWriting → acsToolCalling →
 - Modelos con tools: llama3.3, qwen2.5, qwen3, qwen2.5vl
 - Modelos con reasoning: qwen3 (`ThinkingLevel=tlMedium`), deepseek-r1 (via `<think>` tags)
 - Modelos con visión: llama3.2-vision, qwen2.5vl, gemma3 (todos los tamaños: 1b/4b/12b/27b)
-- Gemma 3: visión + tools en todos los tamaños
+- Gemma 3: visión en todos los tamaños; **sin function calling** vía Ollama (`Tool_Active=False`)
+- Gemma 4 (e2b/e4b): visión + audio nativo + reasoning + **function calling** (`Tool_Active=True`)
 
 ### LM Studio
 - Default global conservador: texto puro, sin tools, `Max_Tokens=4096`

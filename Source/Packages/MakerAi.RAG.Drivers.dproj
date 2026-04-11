@@ -139,6 +139,8 @@
         <DCCReference Include="MakerAI.dcp"/>
         <DCCReference Include="..\RAG\uMakerAi.RAG.Graph.Driver.Postgres.pas"/>
         <DCCReference Include="..\RAG\uMakerAi.RAG.Vector.Driver.Postgres.pas"/>
+        <DCCReference Include="..\RAG\uMakerAi.RAG.Vector.Driver.SQLite.pas"/>
+        <DCCReference Include="..\RAG\uMakerAi.RAG.Vector.Driver.BinFile.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>

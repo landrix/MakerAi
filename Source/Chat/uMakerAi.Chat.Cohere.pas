@@ -1,4 +1,4 @@
-// IT License
+﻿// IT License
 //
 // Copyright (c) <year> <copyright holders>
 //
@@ -48,7 +48,7 @@ uses
   uJSONHelper,
 {$ENDIF}
   uMakerAi.Core, uMakerAi.Chat, uMakerAi.ParamsRegistry,
-  uMakerAi.Embeddings, uMakerAi.Embeddings.Core, uMakerAi.Chat.Messages;
+  uMakerAi.Chat.Messages;
 
 type
   // Forward declarations para claridad
@@ -148,63 +148,6 @@ type
 
   TCohereDocuments = class(TObjectList<TCohereDocument>);
 
-  { ------------------------------------------------------------------------------ }
-  { TAiCohereEmbeddings }
-  { ------------------------------------------------------------------------------ }
-  {
-    Esta clase proporciona una implementaci?n para generar embeddings de texto
-    utilizando la API v2 de Cohere. Hereda de TAiEmbeddings y se integra
-    en el framework de MakerAi.
-
-    **Consideraciones de Implementaci?n y Compatibilidad:**
-
-    La arquitectura actual del framework (a trav?s de `TAiEmbeddingsCore`) est?
-    dise?ada para generar y devolver un ?nico vector de embedding por llamada al
-    m?todo `CreateEmbedding`.
-
-    Para respetar esta interfaz y asegurar la compatibilidad entre diferentes
-    "drivers" (OpenAI, Mistral, etc.), esta implementaci?n de Cohere ha sido
-    adaptada:
-
-    1.  **Procesamiento Individual:** El m?todo `CreateEmbedding` acepta un ?nico
-    string de entrada (`aInput`). Internamente, este string se empaqueta en
-    un array de un solo elemento `["texto"]` para cumplir con el formato
-    requerido por la API de Cohere.
-
-    2.  **Respuesta Individual:** De la respuesta de la API, que contiene un lote
-    de embeddings, solo se extrae y se devuelve el primer vector,
-    correspondiente al texto de entrada.
-
-    **Oportunidad de Optimizaci?n:**
-    La API de Cohere est? altamente optimizada para el procesamiento por lotes,
-    aceptando un array de hasta 96 textos en una ?nica petici?n (`"texts": ["t1", "t2", ...]`).
-    Esto es significativamente m?s eficiente que realizar m?ltiples llamadas
-    individuales. Para aprovechar esta capacidad, se podr?a extender esta clase
-    en el futuro con un m?todo espec?fico para lotes, como por ejemplo:
-
-    `function CreateEmbeddingsBatch(const aInputs: TStrings): TAiEmbeddingList;`
-  }
-
-  TAiCohereInputType = (citSearchDocument, citSearchQuery, citClassification, citClustering);
-
-  TAiCohereEmbeddings = class(TAiEmbeddings)
-  private
-    FInputType: TAiCohereInputType;
-    function GetInputTypeAsString: string;
-  protected
-    // Este m?todo es para procesar la respuesta espec?fica de Cohere.
-    procedure ParseCohereEmbedding(jObj: TJSonObject);
-  public
-    constructor Create(aOwner: TComponent); override;
-    // Sobrescribimos el m?todo principal para la implementaci?n de Cohere.
-    function CreateEmbedding(aInput, aUser: String; aDimensions: Integer = -1; aModel: String = ''; aEncodingFormat: String = 'float'): TAiEmbeddingData; override;
-    class function GetDriverName: string; override;
-    class function CreateInstance(aOwner: TComponent): TAiEmbeddings; override;
-    class procedure RegisterDefaultParams(Params: TStrings); override;
-  published
-    property InputType: TAiCohereInputType read FInputType write FInputType;
-  end;
-
 procedure Register;
 
 implementation
@@ -214,7 +157,7 @@ uses
 
 procedure Register;
 begin
-  RegisterComponents('MakerAI', [TCohereChat, TAiCohereEmbeddings]);
+  RegisterComponents('MakerAI', [TCohereChat]);
 end;
 
 function MapRoleToCohere(const aRole: string): string;
@@ -348,7 +291,12 @@ begin
 
     // 2. Agregar un mensaje 'tool' por cada resultado (formato v2: tool_call_id + content)
     for ToolCall in ToolCallList do
-      InternalAddMessage(ToolCall.Response, 'tool', ToolCall.Id, ToolCall.Name);
+    begin
+      var LToolMsg := InternalAddMessage(ToolCall.Response, 'tool', ToolCall.Id, ToolCall.Name);
+      for var LMF in ToolCall.MediaFiles do
+        LToolMsg.AddMediaFile(LMF);
+      ToolCall.MediaFiles.OwnsObjects := False;
+    end;
 
     // 3. Volver a llamar a Run para obtener la respuesta final
     Self.Run(nil, nil);
@@ -1277,195 +1225,8 @@ begin
   FStop_sequences.Assign(Value);
 end;
 
-{ TAiCohereEmbeddings }
-
-constructor TAiCohereEmbeddings.Create(aOwner: TComponent);
-begin
-  inherited;
-  // Valores por defecto para Cohere
-  Self.ApiKey := '@COHERE_API_KEY';
-  Self.Url := 'https://api.cohere.com/v2/';
-  Self.FModel := 'embed-english-v3.0'; // Modelo por defecto de Cohere
-  Self.FInputType := citSearchQuery; // Un valor por defecto com?n
-end;
-
-function TAiCohereEmbeddings.CreateEmbedding(aInput, aUser: String; aDimensions: Integer; aModel, aEncodingFormat: String): TAiEmbeddingData;
-var
-  Client: TNetHTTPClient;
-  Headers: TNetHeaders;
-  jObj: TJSonObject;
-  JTexts, JEmbeddingTypes: TJSONArray;
-  Res: IHTTPResponse;
-  ResponseStream: TStringStream;
-  BodyStream: TStringStream;
-  sUrl: String;
-  LModel: string;
-  LResponseJson: TJSonObject;
-begin
-  // Si el evento est? asignado, se delega la l?gica (comportamiento de la clase base)
-  if Assigned(OnGetEmbedding) then
-  begin
-    Result := inherited CreateEmbedding(aInput, aUser, aDimensions, aModel, aEncodingFormat);
-    Exit;
-  end;
-
-  Client := TNetHTTPClient.Create(Nil);
-  BodyStream := TStringStream.Create('', TEncoding.UTF8);
-  ResponseStream := TStringStream.Create('', TEncoding.UTF8);
-  jObj := TJSonObject.Create;
-  try
-    sUrl := FUrl + 'embed';
-
-    if aModel <> '' then
-      LModel := aModel
-    else
-      LModel := FModel;
-
-    // 1. Construir el cuerpo de la petici?n JSON
-    jObj.AddPair('model', LModel);
-    jObj.AddPair('input_type', GetInputTypeAsString);
-
-    // La API espera un array de textos. Creamos uno con el ?nico input.
-    JTexts := TJSONArray.Create;
-    JTexts.Add(aInput);
-    jObj.AddPair('texts', JTexts);
-
-    // Solicitamos solo embeddings de tipo 'float'
-    JEmbeddingTypes := TJSONArray.Create;
-    JEmbeddingTypes.Add('float');
-    jObj.AddPair('embedding_types', JEmbeddingTypes);
-
-    // Opcional: Cohere no usa 'dimensions' como OpenAI, sino 'output_dimension'.
-    // Lo a?adimos si es un valor v?lido para Cohere.
-    if (aDimensions = 256) or (aDimensions = 512) or (aDimensions = 1024) or (aDimensions = 1536) then
-    begin
-      jObj.AddPair('output_dimension', aDimensions);
-    end
-    else if (aDimensions > 0) then
-    begin
-      // Opcional: Lanzar un warning o un error si el usuario especifica una dimensi?n
-      // que no es v?lida para este modelo, para evitar confusiones.
-      // Por ahora, simplemente lo ignoramos.
-    end;
-
-    BodyStream.WriteString(jObj.ToString);
-    BodyStream.Position := 0;
-
-    // 2. Ejecutar la llamada a la API
-    Headers := [TNetHeader.Create('Authorization', 'Bearer ' + ApiKey)];
-    Client.ContentType := 'application/json';
-
-    Res := Client.Post(sUrl, BodyStream, ResponseStream, Headers);
-    ResponseStream.Position := 0;
-
-    // 3. Procesar la respuesta
-    if Res.StatusCode = 200 then
-    begin
-      // 1. Parsear el string de respuesta y castearlo a un TJSONObject.
-      LResponseJson := TJSonObject.ParseJSONValue(ResponseStream.DataString) as TJSonObject;
-      try
-        // 2. Pasar el objeto JSON parseado directamente al m?todo de parseo.
-        ParseCohereEmbedding(LResponseJson);
-        Result := Self.FData;
-      finally
-        // 3. Liberar la memoria del objeto JSON que creamos.
-        LResponseJson.Free;
-      end;
-    end
-    Else
-    begin
-      raise Exception.CreateFmt('Error en Cohere Embed API: %d, %s', [Res.StatusCode, Res.ContentAsString]);
-    end;
-
-  finally
-    Client.Free;
-    BodyStream.Free;
-    ResponseStream.Free;
-    jObj.Free;
-  end;
-end;
-
-function TAiCohereEmbeddings.GetInputTypeAsString: string;
-begin
-  case FInputType of
-    citSearchDocument:
-      Result := 'search_document';
-    citSearchQuery:
-      Result := 'search_query';
-    citClassification:
-      Result := 'classification';
-    citClustering:
-      Result := 'clustering';
-  else
-    Result := 'search_query'; // Default seguro
-  end;
-end;
-
-procedure TAiCohereEmbeddings.ParseCohereEmbedding(jObj: TJSonObject);
-var
-  JEmbeddingsObj: TJSonObject;
-  JFloatEmbeddingsArray: TJSONArray;
-  JFirstEmbedding: TJSONArray;
-  J: Integer;
-  JMeta, JBilledUnits: TJSonObject;
-begin
-  // Limpiar datos anteriores
-  SetLength(FData, 0);
-  Fprompt_tokens := 0;
-  Ftotal_tokens := 0;
-
-  // Extraer el uso de tokens
-  if jObj.TryGetValue<TJSonObject>('meta', JMeta) then
-    if JMeta.TryGetValue<TJSonObject>('billed_units', JBilledUnits) then
-      JBilledUnits.TryGetValue<Integer>('input_tokens', Fprompt_tokens);
-
-  Ftotal_tokens := Fprompt_tokens; // En embeddings, total = prompt
-
-  // Navegar la estructura de respuesta de Cohere
-  if jObj.TryGetValue<TJSonObject>('embeddings', JEmbeddingsObj) then
-  begin
-    // Buscamos el array de embeddings de tipo 'float'
-    if JEmbeddingsObj.TryGetValue<TJSONArray>('float', JFloatEmbeddingsArray) then
-    begin
-      // Como solo pedimos un texto, solo nos interesa el primer vector
-      if JFloatEmbeddingsArray.Count > 0 then
-      begin
-        JFirstEmbedding := JFloatEmbeddingsArray.Items[0] as TJSONArray;
-        if Assigned(JFirstEmbedding) then
-        begin
-          // Convertir el TJSONArray a nuestro TAiEmbeddingData (TArray<Double>)
-          SetLength(FData, JFirstEmbedding.Count);
-          for J := 0 to JFirstEmbedding.Count - 1 do
-            FData[J] := JFirstEmbedding.Items[J].GetValue<Double>;
-        end;
-      end;
-    end;
-  end;
-end;
-
-{ TAiCohereEmbeddings - Factory class methods }
-
-class function TAiCohereEmbeddings.GetDriverName: string;
-begin
-  Result := 'Cohere';
-end;
-
-class function TAiCohereEmbeddings.CreateInstance(aOwner: TComponent): TAiEmbeddings;
-begin
-  Result := TAiCohereEmbeddings.Create(aOwner);
-end;
-
-class procedure TAiCohereEmbeddings.RegisterDefaultParams(Params: TStrings);
-begin
-  Params.Values['ApiKey'] := '@COHERE_API_KEY';
-  Params.Values['Url'] := 'https://api.cohere.com/v2/';
-  Params.Values['Model'] := 'embed-english-v3.0';
-  Params.Values['Dimensions'] := '1024';
-end;
-
 initialization
 
 TAiChatFactory.Instance.RegisterDriver(TCohereChat);
-TAiEmbeddingFactory.Instance.RegisterDriver(TAiCohereEmbeddings);
 
 end.

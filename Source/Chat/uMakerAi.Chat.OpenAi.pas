@@ -1,4 +1,4 @@
-unit uMakerAi.Chat.OpenAi;
+﻿unit uMakerAi.Chat.OpenAi;
 
 // MIT License
 //
@@ -46,7 +46,6 @@ uses
   uJSONHelper,
 {$ENDIF}
   uMakerAi.ParamsRegistry, uMakerAi.Chat, uMakerAi.Core,
-  uMakerAi.Embeddings, uMakerAi.Embeddings.Core,
   uMakerAi.Tools.Functions, uMakerAi.Utils.CodeExtractor, uMakerAi.Utils.System, uMakerAi.Chat.Messages;
 
 type
@@ -102,8 +101,8 @@ type
 
     // M?todos heredados que se mantienen igual o se adaptan ligeramente
     Function InternalRunCompletions(ResMsg, AskMsg: TAiChatMessage): String; Override;
-    function InternalRunSpeechGeneration(ResMsg, AskMsg: TAiChatMessage): String; Override;
-    function InternalRunTranscription(aMediaFile: TAiMediaFile; ResMsg, AskMsg: TAiChatMessage): String; Override;
+    function InternalRunNativeSpeechGeneration(ResMsg, AskMsg: TAiChatMessage): String; Override;
+    function InternalRunNativeTranscription(aMediaFile: TAiMediaFile; ResMsg, AskMsg: TAiChatMessage): String; Override;
 
   public
     constructor Create(AOwner: TComponent); override;
@@ -135,17 +134,6 @@ type
     property ReasoningSummary: TAiReasoningSummary read FReasoningSummary write FReasoningSummary default rsmDefault;
   end;
 
-  TAiOpenAiEmbeddings = class(TAiEmbeddings)
-  Public
-    Constructor Create(AOwner: TComponent); Override;
-    Destructor Destroy; Override;
-    Function CreateEmbedding(aInput, aUser: String; aDimensions: Integer = -1; aModel: String = ''; aEncodingFormat: String = 'float'): TAiEmbeddingData; Override;
-    Procedure ParseEmbedding(jObj: TJSonObject); Override;
-    class function GetDriverName: string; override;
-    class function CreateInstance(aOwner: TComponent): TAiEmbeddings; override;
-    class procedure RegisterDefaultParams(Params: TStrings); override;
-  end;
-
 procedure Register;
 
 implementation
@@ -158,7 +146,7 @@ Const
 
 procedure Register;
 begin
-  RegisterComponents('MakerAI', [TAiOpenChat, TAiOpenAiEmbeddings]);
+  RegisterComponents('MakerAI', [TAiOpenChat]);
 end;
 
 { TAiOpenChat }
@@ -179,14 +167,8 @@ begin
   if Model = '' then
     Model := 'gpt-5.1';
 
-  // Configurar capacidades soportadas por este driver
-  ChatMediaSupports := [Tcm_Text, Tcm_Image, Tcm_WebSearch, Tcm_CodeInterpreter, tcm_pdf];
-  // Audio NO se incluye aqu? para evitar que TAiChat intente procesarlo en el flujo principal
-  // NativeInputFiles indica qu? archivos se pueden enviar "crudos" en el input
-  NativeInputFiles := [Tfc_Text, Tfc_Image, Tfc_pdf];
-  // NativeOutputFiles indica qu? puede generar el modelo
-  NativeOutputFiles := [Tfc_Text, Tfc_Image];
   FReasoningSummary := rsmDefault;
+  // Capacidades configuradas via Initializations.pas (ModelConfig.ModelCaps/SessionCaps)
 end;
 
 function TAiOpenChat.DeleteAllUploadedFiles: Integer;
@@ -519,6 +501,41 @@ var
           JToolOutObj.AddPair('call_id', 'call_unknown_' + IntToStr(Msg.Id));
         JToolOutObj.AddPair('output', Msg.Prompt);
         TargetArray.Add(JToolOutObj);
+
+        // Archivos adjuntos (imágenes/PDFs devueltos por el tool MCP)
+        // La Responses API no admite binarios en function_call_output → van en un
+        // mensaje user separado, inmediatamente después del tool result.
+        var LMediaArr2 := Msg.MediaFiles.GetMediaList([Tfc_Image, Tfc_pdf], False);
+        if Length(LMediaArr2) > 0 then
+        begin
+          var JExtraUser := TJSonObject.Create;
+          JExtraUser.AddPair('role', 'user');
+          var JExtraContent := TJSonArray.Create;
+          for var LMF2 in LMediaArr2 do
+          begin
+            if LMF2.FileCategory = Tfc_Image then
+            begin
+              var JImg := TJSonObject.Create;
+              JImg.AddPair('type', 'input_image');
+              JImg.AddPair('image_url', 'data:' + LMF2.MimeType + ';base64,' + LMF2.Base64);
+              JExtraContent.Add(JImg);
+            end
+            else
+            begin
+              var JDoc := TJSonObject.Create;
+              JDoc.AddPair('type', 'input_file');
+              if LMF2.FileName <> '' then
+                JDoc.AddPair('filename', LMF2.FileName)
+              else
+                JDoc.AddPair('filename', 'document.pdf');
+              JDoc.AddPair('file_data', 'data:' + LMF2.MimeType + ';base64,' + LMF2.Base64);
+              JExtraContent.Add(JDoc);
+            end;
+          end;
+          JExtraUser.AddPair('content', JExtraContent);
+          TargetArray.Add(JExtraUser);
+        end;
+
         Exit;
       end;
     end;
@@ -713,10 +730,10 @@ begin
     if FTruncation <> 'disabled' then
       JResult.AddPair('truncation', FTruncation);
 
-    if (ThinkingLevel <> tlDefault) or (FReasoningSummary <> rsmDefault) then
+    if (ModelConfig.ThinkingLevel <> tlDefault) or (FReasoningSummary <> rsmDefault) then
     begin
       JReasoning := TJSonObject.Create;
-      Case ThinkingLevel of
+      Case ModelConfig.ThinkingLevel of
         tlLow:
           JReasoning.AddPair('effort', 'low');
         tlMedium:
@@ -847,7 +864,7 @@ JFormatConfig := Nil;
     if Tool_Active and Assigned(AiFunctions) then
       JToolsArray := GetTools(AiFunctions);
 
-    if (tcm_Shell in ChatMediaSupports) then
+    if (cap_Shell in ModelConfig.ModelCaps) then
     begin
       if not Assigned(JToolsArray) then
         JToolsArray := TJSonArray.Create;
@@ -857,24 +874,24 @@ JFormatConfig := Nil;
       JToolsArray.Add(JShellTool);
     end;
 
-    if (Tcm_Image in ChatMediaSupports) and (Tfc_Image in NativeOutputFiles) then
+    if (cap_GenImage in ModelConfig.ModelCaps) then
     begin
       if not Assigned(JToolsArray) then
         JToolsArray := TJSonArray.Create;
       var
       JImgTool := TJSonObject.Create;
       JImgTool.AddPair('type', 'image_generation');
-      if ImageParams.Count > 0 then
+      if ImageParams.Params.Count > 0 then
       begin
-        if ImageParams.Values['size'] <> '' then
-          JImgTool.AddPair('size', ImageParams.Values['size']);
-        if ImageParams.Values['quality'] <> '' then
-          JImgTool.AddPair('quality', ImageParams.Values['quality']);
+        if ImageParams.Params.Values['size'] <> '' then
+          JImgTool.AddPair('size', ImageParams.Params.Values['size']);
+        if ImageParams.Params.Values['quality'] <> '' then
+          JImgTool.AddPair('quality', ImageParams.Params.Values['quality']);
       end;
       JToolsArray.Add(JImgTool);
     end;
 
-    if (Tcm_CodeInterpreter in ChatMediaSupports) then
+    if (cap_CodeInterpreter in ModelConfig.ModelCaps) then
     begin
       if not Assigned(JToolsArray) then
         JToolsArray := TJSonArray.Create;
@@ -896,7 +913,7 @@ JFormatConfig := Nil;
       JToolsArray.Add(JCodeTool);
     end;
 
-    if (tcm_TextEditor in ChatMediaSupports) then // O tcm_TextEditor si prefieres
+    if (cap_TextEditor in ModelConfig.ModelCaps) then
     begin
       if not Assigned(JToolsArray) then
         JToolsArray := TJSonArray.Create;
@@ -907,7 +924,7 @@ JFormatConfig := Nil;
       JToolsArray.Add(JPatchTool);
     end;
 
-    if (Tcm_WebSearch in ChatMediaSupports) then
+    if (cap_WebSearch in ModelConfig.ModelCaps) then
     begin
       if not Assigned(JToolsArray) then
         JToolsArray := TJSonArray.Create;
@@ -917,17 +934,17 @@ JFormatConfig := Nil;
       JWebTool.AddPair('type', 'web_search');
 
       // Si el usuario configur? par?metros adicionales en WebSearchParams (ej: count=5)
-      if (WebSearchParams.Count > 0) then
+      if (WebSearchParams.Params.Count > 0) then
       begin
         var
         JWebOptions := TJSonObject.Create;
         // Recorremos la lista clave=valor
-        for var I1 := 0 to WebSearchParams.Count - 1 do
+        for var I1 := 0 to WebSearchParams.Params.Count - 1 do
         begin
           var
-          Key := WebSearchParams.Names[I1];
+          Key := WebSearchParams.Params.Names[I1];
           var
-          Val := WebSearchParams.ValueFromIndex[I1];
+          Val := WebSearchParams.Params.ValueFromIndex[I1];
 
           if Key <> '' then
           begin
@@ -1250,19 +1267,7 @@ begin
           if JItem.TryGetValue<String>('name', SVal) then
             ToolCall.Name := SVal;
           if JItem.TryGetValue<String>('arguments', SVal) then
-          begin
             ToolCall.Arguments := SVal;
-            // Poblar Params con pares nombre-valor (consistente con Claude y Mistral)
-            var LArgObj := TJSONObject.ParseJSONValue(SVal) as TJSONObject;
-            if Assigned(LArgObj) then
-            try
-              for var LArgIdx := 0 to LArgObj.Count - 1 do
-                ToolCall.Params.Values[LArgObj.Pairs[LArgIdx].JsonString.Value] :=
-                  LArgObj.Pairs[LArgIdx].JsonValue.Value;
-            finally
-              LArgObj.Free;
-            end;
-          end;
 
           ToolCalls.Add(ToolCall);
         end
@@ -1293,11 +1298,11 @@ begin
             begin
 
               // OPCI?N A: Usar Componente ShellTool (Sesi?n Persistente)
-              if Assigned(ShellTool) then
+              if Assigned(ChatTools.ShellTool) then
               begin
                 // Delegamos la ejecuci?n y el formateo del JSON de respuesta al componente
                 var
-                ShellJsonOutput := ShellTool.Execute(SCallId, JAction);
+                ShellJsonOutput := ChatTools.ShellTool.Execute(SCallId, JAction);
 
                 // Crear y guardar el mensaje de respuesta de la herramienta
                 NewMsg := TAiChatMessage.Create(ShellJsonOutput, 'tool');
@@ -1449,7 +1454,7 @@ begin
             end;
 
             // OPCI?N B: Autom?tico (TAiTextEditorTool)
-            if (not Handled) and (Assigned(TextEditorTool)) then
+            if (not Handled) and (Assigned(ChatTools.TextEditorTool)) then
             begin
               try
                 var
@@ -1468,7 +1473,7 @@ begin
                   end;
 
                   var
-                  ResStr := TextEditorTool.Execute(JCmd.ToString);
+                  ResStr := ChatTools.TextEditorTool.Execute(JCmd.ToString);
 
                   if ResStr.StartsWith('Error') then
                   begin
@@ -1539,6 +1544,9 @@ begin
         NewMsg.ToolCallId := ToolCall.Id;
         NewMsg.FunctionName := ToolCall.Name;
         NewMsg.PreviousResponseId := FResponseId;
+        for var LMF in ToolCall.MediaFiles do
+          NewMsg.AddMediaFile(LMF);
+        ToolCall.MediaFiles.OwnsObjects := False;
         NewMsg.Id := Self.Messages.Count + 1;
         Self.Messages.Add(NewMsg);
       end;
@@ -1559,7 +1567,7 @@ begin
       else
       begin
         // Flujo normal finalizado
-        If tfc_ExtracttextFile in NativeOutputFiles then
+        If cap_ExtractCode in ModelConfig.SessionCaps then
         Begin
           Var
           Code := TMarkdownCodeExtractor.Create;
@@ -1704,7 +1712,7 @@ begin
 
   // Parametros
   CaptureVideoParams := TStringList.Create;
-  CaptureVideoParams.Assign(VideoParams);
+  CaptureVideoParams.Assign(VideoParams.Params);
 
   // Imagen de referencia
   CaptureImageFile := nil;
@@ -1995,7 +2003,7 @@ end;
 // -----------------------------------------------------------------------------
 // M?TODOS LEGACY / ENDPOINTS SEPARADOS (Audio)
 // -----------------------------------------------------------------------------
-function TAiOpenChat.InternalRunSpeechGeneration(ResMsg, AskMsg: TAiChatMessage): String;
+function TAiOpenChat.InternalRunNativeSpeechGeneration(ResMsg, AskMsg: TAiChatMessage): String;
 var
   LUrl, LModel, LVoice, LResponseFormat: string;
   LBodyStream: TStringStream;
@@ -2026,8 +2034,8 @@ begin
   LUrl := Url + 'audio/speech';
   LModel := TAiChatFactory.Instance.GetBaseModel(GetDriverName, Model);
   // 'tts-1'; // O podr?as tener una propiedad espec?fica para el modelo TTS
-  LVoice := Self.Voice; // Usamos la propiedad del componente
-  LResponseFormat := Self.voice_format; // Usamos la propiedad del componente
+  LVoice := TtsParams.Voice; // Usamos la propiedad del componente
+  LResponseFormat := TtsParams.VoiceFormat; // Usamos la propiedad del componente
 
   // 3. Construir y ejecutar la petici?n
   LJsonObject := TJSonObject.Create;
@@ -2093,7 +2101,7 @@ begin
 
 end;
 
-function TAiOpenChat.InternalRunTranscription(aMediaFile: TAiMediaFile; ResMsg, AskMsg: TAiChatMessage): String;
+function TAiOpenChat.InternalRunNativeTranscription(aMediaFile: TAiMediaFile; ResMsg, AskMsg: TAiChatMessage): String;
 var
   Body: TMultipartFormData;
   Client: TNetHTTPClient;
@@ -2144,24 +2152,24 @@ begin
       Body.AddField('prompt', AskMsg.Prompt);
 
     // Formato de respuesta (gen?rico, como string)
-    if not Self.Transcription_ResponseFormat.IsEmpty then
-      Body.AddField('response_format', Self.Transcription_ResponseFormat)
+    if not TranscriptionParams.ResponseFormat.IsEmpty then
+      Body.AddField('response_format', TranscriptionParams.ResponseFormat)
     else
       Body.AddField('response_format', 'json'); // Default a JSON si no se especifica
 
     // Par?metros opcionales
-    if not Self.Language.IsEmpty then
-      Body.AddField('language', Self.Language);
+    if not TranscriptionParams.Language.IsEmpty then
+      Body.AddField('language', TranscriptionParams.Language);
 
     // Usamos la propiedad de Temperatura existente en el componente
     if Self.Temperature > 0 then
       Body.AddField('temperature', FormatFloat('0.0', Self.Temperature));
 
     // Timestamps Granularities (procesamos la cadena)
-    if not Self.Transcription_TimestampGranularities.IsEmpty then
+    if not TranscriptionParams.TimestampGranularities.IsEmpty then
     begin
       // Dividimos la cadena por comas
-      Granularities.CommaText := Self.Transcription_TimestampGranularities;
+      Granularities.CommaText := TranscriptionParams.TimestampGranularities;
       for I := 0 to Granularities.Count - 1 do
       begin
         // A?adimos cada granularidad como un campo separado con '[]'
@@ -2417,8 +2425,7 @@ begin
               ToolCall.Id := BufferTool.GetValue<string>('call_id');
               ToolCall.Name := ToolName;
               ToolCall.Arguments := BufferTool.GetValue<string>('arguments');
-              BufferTool.Free;
-              FTmpToolCallBuffer.Remove(OutputIndex);
+              FTmpToolCallBuffer.Remove(OutputIndex); // doOwnsValues libera BufferTool automáticamente
 
               DoCallFunction(ToolCall);
 
@@ -2427,9 +2434,13 @@ begin
               NewMsg.ToolCallId := ToolCall.Id;
               NewMsg.FunctionName := ToolCall.Name;
               NewMsg.PreviousResponseId := FResponseId;
+              for var LMF in ToolCall.MediaFiles do
+                NewMsg.AddMediaFile(LMF);
+              ToolCall.MediaFiles.OwnsObjects := False;
               NewMsg.Id := FMessages.Count + 1;
               FMessages.Add(NewMsg);
               FRecursionNeeded := True;
+              ToolCall.Free;
             end
 
             // 2. Shell Call
@@ -2441,7 +2452,7 @@ begin
                   JAction: TJSonObject;
                 if JItem.TryGetValue<TJSonObject>('action', JAction) then
                 begin
-                  if Assigned(ShellTool) then
+                  if Assigned(ChatTools.ShellTool) then
                   begin
                     var
                     HistoryItem := TJSonObject.Create;
@@ -2460,7 +2471,7 @@ begin
                     end;
 
                     var
-                    ShellOutput := ShellTool.Execute(CallId, JAction);
+                    ShellOutput := ChatTools.ShellTool.Execute(CallId, JAction);
                     var
                     ResultMsg := TAiChatMessage.Create(ShellOutput, 'tool');
                     ResultMsg.ToolCallId := CallId;
@@ -2613,7 +2624,7 @@ begin
             end;
 
             // --- Extracci?n de c?digo a archivos (MarkdownCodeExtractor) ---
-            If tfc_ExtracttextFile in NativeOutputFiles then
+            If cap_ExtractCode in ModelConfig.SessionCaps then
             Begin
               Var
               Code := TMarkdownCodeExtractor.Create;
@@ -2658,152 +2669,8 @@ begin
   end;
 end;
 
-{ TAiOpenAiEmbeddings }
-
-constructor TAiOpenAiEmbeddings.Create(AOwner: TComponent);
-begin
-  inherited;
-  FApiKey := '@OPENAI_API_KEY';
-  FUrl := GlOpenAIUrl;
-  FDimensions := 1536;
-  FModel := 'text-embedding-3-small';
-end;
-
-function TAiOpenAiEmbeddings.CreateEmbedding(aInput, aUser: String; aDimensions: Integer; aModel, aEncodingFormat: String): TAiEmbeddingData;
-Var
-  Client: TNetHTTPClient;
-  Headers: TNetHeaders;
-  jObj: TJSonObject;
-  Res: IHTTPResponse;
-  Response: TStringStream;
-  St: TStringStream;
-  sUrl: String;
-begin
-
-  Client := TNetHTTPClient.Create(Nil);
-{$IF CompilerVersion >= 35}
-  Client.SynchronizeEvents := False;
-{$ENDIF}
-  St := TStringStream.Create('', TEncoding.UTF8);
-  Response := TStringStream.Create('', TEncoding.UTF8);
-  sUrl := FUrl + 'embeddings';
-  jObj := TJSonObject.Create;
-
-  If aModel = '' then
-    aModel := FModel;
-
-  if aDimensions <= 0 then
-    aDimensions := FDimensions;
-
-  Try
-    jObj.AddPair('input', aInput); // Este se adiciona por compatibilidad con ollama
-    jObj.AddPair('prompt', aInput);
-    jObj.AddPair('model', aModel);
-    jObj.AddPair('user', aUser);
-    jObj.AddPair('dimensions', aDimensions);
-    jObj.AddPair('encoding_format', aEncodingFormat);
-
-    St.WriteString(jObj.ToJson);
-    St.Position := 0;
-
-    Headers := [TNetHeader.Create('Authorization', 'Bearer ' + ApiKey)];
-    Headers := Headers + [TNetHeader.Create('OpenAI-Beta', 'assistants=v2')];
-    Client.ContentType := 'application/json';
-
-    Res := Client.Post(sUrl, St, Response, Headers);
-    Response.Position := 0;
-
-{$IFDEF APIDEBUG}
-    Response.SaveToFile('c:\temp\response.txt');
-{$ENDIF}
-    if Res.StatusCode = 200 then
-    Begin
-      jObj := TJSonObject(TJSonObject.ParseJSONValue(Res.ContentAsString));
-      ParseEmbedding(jObj);
-      Result := Self.FData;
-
-    End
-    else
-    begin
-      Raise Exception.CreateFmt('Error Received: %d, %s', [Res.StatusCode, Res.ContentAsString]);
-    end;
-
-  Finally
-    Client.Free;
-    St.Free;
-    Response.Free;
-    jObj.Free;
-  End;
-end;
-
-destructor TAiOpenAiEmbeddings.Destroy;
-begin
-
-  inherited;
-end;
-
-procedure TAiOpenAiEmbeddings.ParseEmbedding(jObj: TJSonObject);
-Var
-  JArr, jData: TJSonArray;
-  Emb: TAiEmbeddingData;
-  JVal: TJSONValue;
-  j: Integer;
-  Usage: TJSonObject;
-
-begin
-  jObj.TryGetValue<String>('model', FModel);
-
-  If jObj.TryGetValue<TJSonObject>('usage', Usage) then
-  Begin
-    Usage.TryGetValue<Integer>('prompt_tokens', Fprompt_tokens);
-    Usage.TryGetValue<Integer>('total_tokens', Ftotal_tokens);
-  End;
-
-  jData := jObj.GetValue<TJSonArray>('data');
-
-  SetLength(FData, jData.Count);
-
-  // var i := 0;
-  For JVal in jData do
-  Begin
-    // El embedding de OpenAi Retorna un array, pero solo se toma el primero de la fila
-    JArr := TJSonObject(JVal).GetValue<TJSonArray>('embedding');
-    j := JArr.Count;
-    SetLength(Emb, j);
-    // FillChar(Emb, Length(Emb) * SizeOf(Double), 0);
-
-    For j := 0 to JArr.Count - 1 do
-      Emb[j] := JArr.Items[j].GetValue<Double>;
-
-    FData := Emb;
-    // Inc(i);
-    Break; // Si el embedding de OpenAI retorna varios solo tomamos el primero, usualmente solo hay uno
-  End;
-end;
-
-{ TAiOpenAiEmbeddings - Factory class methods }
-
-class function TAiOpenAiEmbeddings.GetDriverName: string;
-begin
-  Result := 'OpenAi';
-end;
-
-class function TAiOpenAiEmbeddings.CreateInstance(aOwner: TComponent): TAiEmbeddings;
-begin
-  Result := TAiOpenAiEmbeddings.Create(aOwner);
-end;
-
-class procedure TAiOpenAiEmbeddings.RegisterDefaultParams(Params: TStrings);
-begin
-  Params.Values['ApiKey'] := '@OPENAI_API_KEY';
-  Params.Values['Url'] := GlOpenAIUrl;
-  Params.Values['Model'] := 'text-embedding-3-small';
-  Params.Values['Dimensions'] := '1536';
-end;
-
 Initialization
 
 TAiChatFactory.Instance.RegisterDriver(TAiOpenChat);
-TAiEmbeddingFactory.Instance.RegisterDriver(TAiOpenAiEmbeddings);
 
 end.

@@ -1,4 +1,4 @@
-// MIT License
+﻿// MIT License
 // MakerAI - Sistema de Agentes v3.4
 // Interfaz unificada de herramientas para el rediseño del sistema de agentes.
 //
